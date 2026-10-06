@@ -17,4 +17,15 @@
 # Libs\LibCraftProfit-1.0\lib.xml
 #@end-non-debug@
 
-ProfessionProfit.lua
+Core.lua
+Recipes.lua
+Queue.lua
+Scan.lua
+ProfitTable.lua
+ReagentWindow.lua
+Crafting.lua
+QueueWindow.lua
+Restock.lua
+Tabs.lua
+Toast.lua
+Events.lua
