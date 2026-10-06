@@ -1,4 +1,4 @@
-## Interface: 16001, 11509
+## Interface: 16001
 ## Title: ProfessionProfit
 ## Notes: Profit table tab on the profession window. Prices every learned recipe from the AH while the auction house is open.
 ## Author: woodt
