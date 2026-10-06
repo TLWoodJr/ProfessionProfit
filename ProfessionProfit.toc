@@ -9,8 +9,12 @@
 ## Dependencies: Auctionator
 ## OptionalDeps: LibCraftProfit-1.0, DevLog, Skillet
 
-Libs\LibStub\LibStub.lua
-Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
-Libs\LibCraftProfit-1.0\lib.xml
+# Embedded libraries: the packager uncomments these in release builds. While
+# developing, the standalone LibCraftProfit-1.0 addon (OptionalDeps) loads them.
+#@non-debug@
+# Libs\LibStub\LibStub.lua
+# Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+# Libs\LibCraftProfit-1.0\lib.xml
+#@end-non-debug@
 
 ProfessionProfit.lua
