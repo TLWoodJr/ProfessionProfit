@@ -1,0 +1,16 @@
+## Interface: 16001, 11509
+## Title: ProfessionProfit
+## Notes: Profit table tab on the profession window. Prices every learned recipe from the AH while the auction house is open.
+## Author: woodt
+## Version: @project-version@
+## Category-enUS: Professions
+## X-Category: Tradeskill
+## SavedVariables: ProfessionProfitDB
+## Dependencies: Auctionator
+## OptionalDeps: LibCraftProfit-1.0, DevLog, Skillet
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibCraftProfit-1.0\lib.xml
+
+ProfessionProfit.lua

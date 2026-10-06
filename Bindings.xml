@@ -1,0 +1,5 @@
+<Bindings>
+  <Binding name="PROFESSIONPROFIT_CRAFTNEXT" header="PROFESSIONPROFIT" category="ADDONS">
+    ProfessionProfit_CraftNext()
+  </Binding>
+</Bindings>
