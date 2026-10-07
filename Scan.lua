@@ -40,6 +40,7 @@ end
 
 local function updateScanButton()
   if not ns.panel then return end
+  if API.IsScanningBooks() then return end -- the scan's progress shows instead
   ns.panel.scanButton:SetText("Scan AH")
   local prof = professionName()
   local last = prof and lastScanTime(prof)
@@ -55,9 +56,28 @@ local function updateScanButton()
 end
 ns.updateScanButton = updateScanButton
 
--- Scan AH button: search the AH (through Auctionator) for every reagent and
--- crafted item of the open profession. The table refreshes as results arrive.
+-- Step 2: one Auctionator multi-search for everything, so its price
+-- database (sell prices, and the fallback for items without an order book)
+-- is current too.
+local function searchAuctionator(prof, items)
+  local count, reason = API.Search(items, { force = true, caller = ADDON })
+  log("scan", prof, count or 0, reason or "")
+  if not count then
+    msg(reason)
+  elseif count > 0 then
+    msg(("Searching %d item(s) in Auctionator's Shopping tab - the table updates as results come in."):format(count))
+  end
+  updateScanButton()
+end
+
+-- Scan AH button. Step 1: the order book (every listing) of each reagent
+-- and stackable crafted item, so costs are what the amount you need really
+-- costs, and undercuts show. Then step 2 above. Clicking again stops it.
 local function startScan(retries)
+  if API.IsScanningBooks() then
+    API.CancelBookScan()
+    return
+  end
   if not ahOpen() then
     msg("Open the auction house first.")
     return
@@ -78,16 +98,40 @@ local function startScan(retries)
     C_Timer.After(0.5, function() startScan((retries or 0) + 1) end)
     return
   end
-  local count, reason = API.Search(scanItems(recipes), { force = true, caller = ADDON })
-  log("scan", prof, count or 0, reason or "")
+  local items = scanItems(recipes)
+  local ids = {}
+  for _, item in ipairs(items) do ids[#ids + 1] = item.id end
+  local count, reason = API.ScanBooks(ids, {
+    onProgress = function(done, total)
+      if ns.panel then ns.panel.scanButton:SetText("Stop") end
+      setStatus(("Reading order books %d/%d..."):format(done, total))
+      if ns.refreshSoon then ns.refreshSoon() end
+    end,
+    onDone = function(why, done, total)
+      log("order books", why, done, "/", total)
+      if why == "done" then
+        markScanned(prof)
+        searchAuctionator(prof, items)
+      else
+        msg(("Order book scan %s after %d of %d items."):format(why == "closed" and "stopped (AH closed)" or "stopped", done, total))
+        updateScanButton()
+      end
+      if ns.refreshSoon then ns.refreshSoon() end
+    end,
+  })
+  log("scan", prof, "order books:", count or 0, reason or "")
   if not count then
     msg(reason)
-  elseif count == 0 then
-    msg("Nothing to search: every reagent is sold by a vendor.")
-  else
-    markScanned(prof)
-    msg(("Searching %d item(s) in Auctionator's Shopping tab - the table updates as results come in."):format(count))
+    updateScanButton()
+    return
   end
-  updateScanButton()
+  if count == 0 then
+    markScanned(prof)
+    searchAuctionator(prof, items)
+    return
+  end
+  if ns.panel then ns.panel.scanButton:SetText("Stop") end
+  setStatus(("Reading order books 0/%d..."):format(count))
+  msg(("Reading the order books of %d item(s), then searching everything in Auctionator."):format(count))
 end
 ns.startScan = startScan

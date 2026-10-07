@@ -42,6 +42,9 @@ frame:SetScript("OnEvent", function(_, event, arg, ...)
       ProfessionProfitDB = ProfessionProfitDB or {}
       db = ProfessionProfitDB
       ns.runInit(db)
+      -- Order books (every listing of a reagent) survive /reload.
+      db.orderBooks = db.orderBooks or {}
+      API.SetBookStore(db.orderBooks)
       db.sortKey = db.sortKey or "profit"
       if db.sortDesc == nil then db.sortDesc = true end
       API.RegisterCallback(ADDON, "PricesUpdated", function()

@@ -5,6 +5,7 @@ local API, RED, GREY, GREEN, msg, log = ns.API, ns.RED, ns.GREY, ns.GREEN, ns.ms
 local hostShown, evaluate, readRecipes, craftQueue, queuedCount, queueTarget = ns.hostShown, ns.evaluate, ns.readRecipes, ns.craftQueue, ns.queuedCount, ns.queueTarget
 local setQueueTarget, craftsToQueue, recipeDef, planDerived, dropSub, subTree = ns.setQueueTarget, ns.craftsToQueue, ns.recipeDef, ns.planDerived, ns.dropSub, ns.subTree
 local effectivelyIncluded, chosenSubs, queueOrdered, refresh = ns.effectivelyIncluded, ns.chosenSubs, ns.queueOrdered, ns.refresh
+local applyChoices, mergeTrees, recommend, craftEffect, shoppingCost, withSubs = ns.applyChoices, ns.mergeTrees, ns.recommend, ns.craftEffect, ns.shoppingCost, ns.withSubs
 local db
 ns.onInit(function(saved) db = saved end)
 
@@ -18,18 +19,6 @@ ns.onInit(function(saved) db = saved end)
 
 local popup -- the window (createPopup)
 local DOCK_ROWS = 10 -- reagent rows shown; any more still count (as ticked)
-
--- Your tick overrides, per reagent recipe: kept only where they differ from
--- the craft-or-buy rule, so the rule still decides everything else.
-local function applyChoices(flat)
-  local choices = db.reagentChoices or {}
-  for _, entry in ipairs(flat) do
-    entry.ruleInclude = entry.include
-    local choice = choices[entry.sub.recipeID]
-    if choice ~= nil then entry.include = choice end
-  end
-  return flat
-end
 
 local function rememberChoice(entry)
   db.reagentChoices = db.reagentChoices or {}
@@ -87,33 +76,19 @@ local function popupCrafts()
   return math.max(1, math.min(n, 999))
 end
 
--- Batch mode (Queue profitable): the steps to queue with the reagents ticked
--- in the combined list, each step getting the ones from its own reagent tree.
-local function batchSteps()
-  local chosen = {}
-  for _, sub in ipairs(chosenSubs(popup.subs)) do chosen[sub.recipeID] = sub end
-  local steps = {}
-  for _, step in ipairs(popup.batch) do
-    local subs = {}
-    for id in pairs(step.tree) do
-      if chosen[id] then subs[#subs + 1] = chosen[id] end
-    end
-    steps[#steps + 1] = { recipe = step.recipe, crafts = step.crafts, subs = subs }
-  end
-  return steps
-end
-
--- One line per reagent: name, a short craft-or-buy verdict, crafts to queue.
--- Hover for the numbers.
-local function reagentVerdict(entry)
-  if not entry.unitCraft then return RED .. "cost unknown|r" end
-  if not entry.canBuy then return RED .. "no AH price|r" end
-  if entry.saving > 0 then return GREEN .. "saves " .. API.Money(entry.saving) .. "|r" end
-  return RED .. "buy cheaper|r"
+-- One line per reagent: name, what crafting it does to the shopping list,
+-- crafts to queue. Hover for the numbers.
+local function reagentVerdict(effect)
+  if effect.unknown then return RED .. "cost unknown|r" end
+  if effect.short then return RED .. "not enough on AH|r" end
+  if effect.needed then return GREEN .. "not on AH|r" end
+  if effect.saving > 0 then return GREEN .. "saves " .. API.Money(effect.saving) .. "|r" end
+  if effect.saving < 0 then return RED .. "loses " .. API.Money(-effect.saving) .. "|r" end
+  return GREY .. "no change|r"
 end
 
 local function reagentRowTooltip(row)
-  local entry, d = row.entry, row.plan
+  local entry, d, effect = row.entry, row.plan, row.effect
   if not entry then return end
   GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
   GameTooltip:AddLine(entry.reagent.name or "?")
@@ -124,12 +99,16 @@ local function reagentRowTooltip(row)
   if row.queuedNow and row.queuedNow > 0 then
     GameTooltip:AddDoubleLine("Already queued", row.queuedNow, 0.8, 0.8, 0.8, 1, 1, 1)
   end
-  if entry.unitCraft then GameTooltip:AddDoubleLine("Craft cost", API.Money(entry.unitCraft) .. " ea", 0.8, 0.8, 0.8, 1, 1, 1) end
-  GameTooltip:AddDoubleLine("Buy price", entry.canBuy and (API.Money(entry.buy) .. " ea") or "no current AH price", 0.8, 0.8, 0.8, 1, 1, 1)
-  if entry.saving then
-    GameTooltip:AddDoubleLine(entry.saving > 0 and "Crafting saves" or "Buying saves", API.Money(math.abs(entry.saving)) .. " ea",
-      0.8, 0.8, 0.8, 1, 1, 1)
+  if effect then
+    GameTooltip:AddDoubleLine("Shopping list if crafted", API.Money(effect.craft), 0.8, 0.8, 0.8, 1, 1, 1)
+    GameTooltip:AddDoubleLine("Shopping list if bought", API.Money(effect.buy), 0.8, 0.8, 0.8, 1, 1, 1)
+    if effect.short then GameTooltip:AddLine("Crafting it needs more of a reagent than the AH lists.", 1, 0.4, 0.4, true) end
+    if effect.unknown then GameTooltip:AddLine("Crafting it needs a reagent with no price.", 1, 0.4, 0.4, true) end
+    if effect.needed then GameTooltip:AddLine("It has no current AH price, so crafting is the way to get it.", 0.6, 0.6, 0.6, true) end
   end
+  if entry.unitCraft then GameTooltip:AddDoubleLine("Craft cost (one)", API.Money(entry.unitCraft) .. " ea", 0.6, 0.6, 0.6, 0.8, 0.8, 0.8) end
+  if entry.canBuy then GameTooltip:AddDoubleLine("Buy price (one)", API.Money(entry.buy) .. " ea", 0.6, 0.6, 0.6, 0.8, 0.8, 0.8) end
+  GameTooltip:AddLine("Shopping list costs count every reagent of the queue at the amount needed, from the order book.", 0.6, 0.6, 0.6, true)
   if entry.include ~= entry.ruleInclude then
     GameTooltip:AddLine("Your choice (remembered) - the rule would " .. (entry.ruleInclude and "craft" or "buy") .. " it.", 0.6, 0.6, 0.6, true)
   end
@@ -138,8 +117,10 @@ local function reagentRowTooltip(row)
 end
 
 -- Header lines move up in the preview (no quantity row there).
+-- In the reagent list the profit line is on the queue window instead.
 local function layoutPopup(batch)
-  local top = batch and 0 or 24
+  local top = batch and -20 or 24
+  popup.profit:SetShown(not batch)
   popup.inQueue:ClearAllPoints()
   popup.inQueue:SetPoint("TOPLEFT", 14, batch and -34 or -58)
   popup.inQueue:SetPoint("RIGHT", -14, 0)
@@ -163,18 +144,13 @@ local function updatePopup()
   popup.backButton:SetShown(not batch)
   popup.updateButton:SetEnabled(next(popup.changed) ~= nil)
   local rowsTop = layoutPopup(batch)
-  local mains, recipe, crafts = {}, nil, nil
+  -- mains offer every listed reagent recipe; on() says which are ticked.
+  local mains, recipe, crafts = popup.mains, nil, nil
   if batch then
     local total = 0
     for _, step in ipairs(batch) do total = total + step.crafts end
     popup.title:SetText("Reagents for the queue")
     popup.inQueue:SetText(("%d queued item(s), %d craft(s)"):format(#batch, total))
-    for _, step in ipairs(batchSteps()) do
-      local main = recipeDef(step.recipe)
-      main.count, main.subs = step.crafts, {}
-      for _, sub in ipairs(step.subs) do main.subs[sub.recipeID] = recipeDef(sub) end
-      mains[#mains + 1] = main
-    end
   else
     recipe, crafts = popup.recipe, popupCrafts()
     popup.title:SetText("Queue: " .. recipe.name)
@@ -184,24 +160,30 @@ local function updatePopup()
     if not popup.restockBox:HasFocus() then popup.restockBox:SetText(target and tostring(target) or "") end
 
     -- Plan this item alone to show how many of each reagent level it needs.
-    local subsDefs = {}
-    for _, sub in ipairs(chosenSubs(popup.subs)) do subsDefs[sub.recipeID] = recipeDef(sub) end
     local main = recipeDef(recipe)
-    main.count, main.subs = crafts, subsDefs
-    mains[1] = main
+    main.count, main.subs = crafts, {}
+    for _, entry in ipairs(popup.subs) do main.subs[entry.sub.recipeID] = recipeDef(entry.sub) end
+    mains = { main }
   end
-  local _, plan = planDerived(mains)
+  local listed = {}
+  for _, entry in ipairs(popup.subs) do listed[entry.sub.recipeID] = entry end
+  local function on(id)
+    local entry = listed[id]
+    if entry then return entry.include end
+    return true -- another profession's reagent crafts in the queue stay as they are
+  end
+  local _, plan = planDerived(withSubs(mains, on))
+  -- What all the ticked reagent crafts together do to the shopping list.
+  local saving = not batch and shoppingCost(mains, function(id) return not listed[id] end) - shoppingCost(mains, on) or 0
 
-  local saving, rows = 0, popup.subRows
+  local rows = popup.subRows
   for i, entry in ipairs(popup.subs) do
     local active = effectivelyIncluded(popup.subs, i)
     local d = active and plan[entry.sub.recipeID]
-    if d and entry.saving and entry.saving > 0 then
-      saving = saving + entry.saving * math.min(d.need, d.count * d.made)
-    end
     local row = rows[i]
     if row then
-      row.entry, row.plan, row.active = entry, d, active
+      local effect = craftEffect(mains, on, entry.sub.recipeID)
+      row.entry, row.plan, row.active, row.effect = entry, d, active, effect
       row.queuedNow = queuedCount(entry.sub.recipeID)
       row.check:SetChecked(entry.include)
       row.check:ClearAllPoints()
@@ -209,7 +191,7 @@ local function updatePopup()
       local name = (entry.depth > 1 and (GREY .. ">|r ") or "") .. (entry.reagent.name or "?")
       if entry.include and not active then name = GREY .. (entry.reagent.name or "?") .. "|r" end
       row.left:SetText(name)
-      row.right:SetText(reagentVerdict(entry))
+      row.right:SetText(reagentVerdict(effect))
       row.count:SetText(d and d.count > 0 and ("x%d"):format(d.count) or (GREY .. "-|r"))
       row:Show()
     end
@@ -226,28 +208,57 @@ local function updatePopup()
     .. (more > 0 and (GREY .. ("  +%d more (by the rule)|r"):format(more)) or ""))
 
   local text
-  if batch and #batch == 0 then
+  if batch then
     text = nil
-  elseif batch then
-    local total = 0
-    for _, step in ipairs(batch) do total = total + (step.recipe.profit or 0) * step.crafts end
-    text = ("Profit: %s"):format(API.Money(total))
   elseif recipe.profit then
     text = ("Profit: %s ea, %s total"):format(API.Money(recipe.profit), API.Money(recipe.profit * crafts))
     if recipe.incomplete then text = text .. RED .. " *|r" end
   end
   if text then
-    if saving > 0 then text = text .. ("  " .. GREEN .. "+%s from reagents|r"):format(API.Money(saving)) end
+    if saving > 0 then
+      text = text .. ("  " .. GREEN .. "+%s from reagents|r"):format(API.Money(saving))
+    elseif saving < 0 then
+      text = text .. ("  " .. RED .. "-%s from reagents|r"):format(API.Money(-saving))
+    end
     popup.profit:SetText(text)
-  elseif batch then
-    popup.profit:SetText("")
-  else
+  elseif not batch then
     popup.profit:SetText(GREY .. "Profit unknown (no AH price for the crafted item).|r")
   end
   popup:SetHeight(rowsTop + math.max(shownRows, 1) * 20 + 40)
   ns.placeReagentWindow()
 end
 ns.updatePopup = updatePopup
+
+-- The queue window's profit line: the queued items' profit (as priced in
+-- the Profit table, so the open profession's only, every reagent bought)
+-- plus what the ticked reagent crafts do to the shopping list (listCost:
+-- its cost as queued).
+local function queueProfitLine(listCost)
+  local queue = craftQueue()
+  if #queue == 0 then return "" end
+  local byProduct = liveByProduct()
+  local total, priced, unpriced, incomplete = 0, 0, 0, false
+  for _, main in ipairs(queue) do
+    local recipe = main.productID and byProduct[main.productID]
+    if recipe and recipe.recipeID == main.recipeID and recipe.profit then
+      total, priced = total + recipe.profit * main.count, priced + 1
+      incomplete = incomplete or recipe.incomplete
+    else
+      unpriced = unpriced + 1
+    end
+  end
+  local saving = db.skipReagentCrafts and 0 or (shoppingCost(queue, function() return false end) - listCost)
+  local text = "Profit: " .. (priced > 0 and API.Money(total + saving) or (GREY .. "unknown|r"))
+  if incomplete then text = text .. RED .. " *|r" end
+  if saving > 0 then
+    text = text .. ("  " .. GREEN .. "(+%s from reagents)|r"):format(API.Money(saving))
+  elseif saving < 0 then
+    text = text .. ("  " .. RED .. "(-%s from reagents)|r"):format(API.Money(-saving))
+  end
+  if unpriced > 0 then text = text .. GREY .. (" %d unpriced"):format(unpriced) .. "|r" end
+  return text
+end
+ns.queueProfitLine = queueProfitLine
 
 local showBatch -- defined below
 
@@ -376,7 +387,7 @@ local function createPopup()
     row.count:SetJustifyH("RIGHT")
     row.right = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     row.right:SetPoint("RIGHT", row.count, "LEFT", -6, 0)
-    row.right:SetWidth(96)
+    row.right:SetWidth(112)
     row.right:SetJustifyH("RIGHT")
     row.right:SetWordWrap(false)
     row.left = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -468,33 +479,26 @@ end
 showBatch = function()
   if not popup then return end
   local byProduct = liveByProduct()
-  local steps, merged, indexOf, queued = {}, {}, {}, {}
+  local steps, others, queued = {}, {}, {}
   for _, main in ipairs(craftQueue()) do
     local recipe = main.productID and byProduct[main.productID]
     if recipe and recipe.recipeID == main.recipeID then
       for id in pairs(main.subs or {}) do queued[id] = true end
-      local step = { recipe = recipe, crafts = main.count, tree = {} }
-      steps[#steps + 1] = step
-      local map = {}
-      for i, entry in ipairs(subTree(recipe, main.count, byProduct)) do
-        local id = entry.sub.recipeID
-        step.tree[id] = true
-        if not indexOf[id] then
-          entry.parent = entry.parent and map[entry.parent]
-          merged[#merged + 1] = entry
-          indexOf[id] = #merged
-        end
-        map[i] = indexOf[id]
-      end
+      steps[#steps + 1] = { recipe = recipe, crafts = main.count }
+    else
+      others[#others + 1] = main -- another profession: kept as queued
     end
   end
+  local merged, mains = mergeTrees(steps, byProduct)
+  for _, main in ipairs(others) do mains[#mains + 1] = main end
+  recommend(merged, mains)
   for _, entry in ipairs(merged) do
     local id = entry.sub.recipeID
     entry.ruleInclude = entry.include
     entry.include = queued[id] or false
     if popup.changed[id] then entry.include = popup.changed[id].include end
   end
-  popup.recipe, popup.batch, popup.subs = nil, steps, merged
+  popup.recipe, popup.batch, popup.subs, popup.mains = nil, steps, merged, mains
   -- Nothing to choose when the queue crafts no reagents ("Craft reagents" off).
   if #merged == 0 or popup.closed or db.skipReagentCrafts then
     popup:Hide()
@@ -509,8 +513,9 @@ ns.showBatch = showBatch
 local function openQueuePopup(recipe)
   if not recipe.recipeID then msg("Queueing needs the Professions (K) window.") return end
   if not popup then createPopup() end
-  popup.recipe, popup.batch, popup.closed = recipe, nil, nil
-  popup.subs = applyChoices(subTree(recipe, craftsToQueue(recipe)))
+  popup.recipe, popup.batch, popup.closed, popup.mains = recipe, nil, nil, nil
+  local flat, mains = mergeTrees({ { recipe = recipe, crafts = math.max(1, craftsToQueue(recipe)) } })
+  popup.subs = applyChoices(recommend(flat, mains))
   popup.qty:SetText(tostring(math.max(1, craftsToQueue(recipe))))
   popup:Show()
   updatePopup()
@@ -527,8 +532,15 @@ local function queueProfitable()
     msg("Nothing to queue" .. skipped .. ".")
     return
   end
+  -- Decided together: their reagents share order books.
+  local merged, mains = mergeTrees(steps)
+  local chosen = {}
+  for _, sub in ipairs(chosenSubs(applyChoices(recommend(merged, mains)))) do chosen[sub.recipeID] = sub end
   for _, step in ipairs(steps) do
-    step.subs = chosenSubs(applyChoices(subTree(step.recipe, step.crafts)))
+    step.subs = {}
+    for id in pairs(step.tree) do
+      if chosen[id] then step.subs[#step.subs + 1] = chosen[id] end
+    end
   end
   local done, failed = queueOrdered(steps)
   local text = ("Queued %d recipe(s)%s."):format(#done, skipped)

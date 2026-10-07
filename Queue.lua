@@ -234,6 +234,16 @@ ns.planDerived = planDerived
 -- The queue as it should be crafted: reagent crafts first, deepest level
 -- first (live: needed by the queue, minus what's in your bags), then the
 -- queued items.
+local function planEntries(mains)
+  local plan, derived = planDerived(mains)
+  local list = {}
+  for _, d in ipairs(plan) do
+    if d.count > 0 then list[#list + 1] = d end
+  end
+  for _, main in ipairs(mains) do list[#list + 1] = main end
+  return list, derived
+end
+
 computeQueue = function()
   local queue = craftQueue()
   -- "Craft reagents" unticked in the queue window: buy every reagent.
@@ -242,13 +252,7 @@ computeQueue = function()
     for _, main in ipairs(queue) do list[#list + 1] = main end
     return list, {}
   end
-  local plan, derived = planDerived(queue)
-  local list = {}
-  for _, d in ipairs(plan) do
-    if d.count > 0 then list[#list + 1] = d end
-  end
-  for _, main in ipairs(queue) do list[#list + 1] = main end
-  return list, derived
+  return planEntries(queue)
 end
 ns.computeQueue = computeQueue
 
@@ -261,13 +265,10 @@ end
 ns.dropSub = dropSub
 
 -- Craftable reagents of a recipe (made by another learned recipe of this
--- profession). Crafting one is "profitable" when its reagent cost per unit
--- is below what it costs to buy (vendor or AH - no AH cut, nothing is sold).
--- Reagents you can't buy at all (not on the AH) are always included.
--- Craftable reagents of a recipe (made by another learned recipe of this
--- profession), with the craft-or-buy decision: craft when its reagent cost
--- per unit is below what it costs to buy (vendor or AH - no AH cut, nothing
--- is sold), or when it can't be bought at all (not on the AH).
+-- profession), with a first per-unit guess at craft-or-buy: craft when its
+-- reagent cost per unit is below what it costs to buy (vendor or AH - no AH
+-- cut, nothing is sold), or when it can't be bought at all (not on the AH).
+-- recommend() then decides by the whole shopping list.
 -- How many to craft is worked out later from your bags (computeQueue).
 local function subReagents(recipe, crafts, byProduct)
   local list = {}
@@ -374,11 +375,12 @@ local function craftableNow(entry)
 end
 ns.craftableNow = craftableNow
 
--- Reagents still missing for the whole queue: needs minus bags/bank minus
--- what earlier queue entries will craft. Returns list, estimated cost.
-local function queueShopping()
+-- Reagents still missing for a crafting plan (computeQueue's shape): needs
+-- minus bags/bank minus what earlier entries will craft. Returns list,
+-- estimated cost, unpriced items, items the AH doesn't list enough of.
+local function shoppingFor(entries)
   local need, produced, names = {}, {}, {}
-  for _, entry in ipairs(computeQueue()) do
+  for _, entry in ipairs(entries) do
     for _, reagent in ipairs(entry.reagents) do
       if reagent.id then
         need[reagent.id] = (need[reagent.id] or 0) + reagent.c * entry.count
@@ -389,25 +391,152 @@ local function queueShopping()
       produced[entry.productID] = (produced[entry.productID] or 0) + (entry.made or 1) * entry.count
     end
   end
-  local list, cost, unpriced = {}, 0, 0
+  local list, cost, unpriced, shortCount = {}, 0, 0, 0
   for id, n in pairs(need) do
     local bags = bagCount(id)
     local short = n - bags - (produced[id] or 0)
     if short > 0 then
       local bank = math.max(0, ((GetItemCount and GetItemCount(id, true)) or bags) - bags)
       local buy = math.max(0, short - bank)
-      local price = API.BuyPrice(id)
+      -- What buying that many really costs (walks the order book).
+      local total, info = nil, nil
+      if buy > 0 then total, info = API.BuyCost(id, buy) end
       if buy > 0 then
-        if price then cost = cost + price * buy else unpriced = unpriced + 1 end
+        if total then cost = cost + total else unpriced = unpriced + 1 end
       end
+      if info and info.short then shortCount = shortCount + 1 end
       list[#list + 1] = { id = id, name = names[id] or itemName(id) or ("item " .. id), count = short,
-        bank = math.min(bank, short), buy = buy, price = price }
+        bank = math.min(bank, short), buy = buy, total = total, short = info and info.short,
+        undercut = info and info.src == "book" and API.Undercut(id) ~= nil }
     end
   end
   table.sort(list, function(a, b) return a.name < b.name end)
-  return list, cost, unpriced
+  return list, cost, unpriced, shortCount
+end
+
+-- The whole queue's shopping list: list, cost, unpriced, short.
+local function queueShopping()
+  return shoppingFor((computeQueue()))
 end
 ns.queueShopping = queueShopping
+
+------------------------------------------------------------------------------
+-- Craft or buy, by the shopping list. Crafting a reagent is only worth it
+-- when the queue's shopping list (every amount priced from the order book)
+-- gets cheaper - a per-unit comparison misses that buying thousands of a
+-- cheap input walks far up its order book.
+------------------------------------------------------------------------------
+
+-- Copies of queue entries (mains) keeping only the reagent recipes on(id)
+-- says to craft.
+local function withSubs(mains, on)
+  local copy = {}
+  for i, main in ipairs(mains) do
+    local subs = {}
+    for id, def in pairs(main.subs or {}) do
+      if on(id) then subs[id] = def end
+    end
+    copy[i] = setmetatable({ subs = subs }, { __index = main })
+  end
+  return copy
+end
+ns.withSubs = withSubs
+
+-- Shopping list for mains crafting the reagents on(id) allows (the rest are
+-- bought): cost, unpriced, short.
+local function shoppingCost(mains, on)
+  local _, cost, unpriced, short = shoppingFor((planEntries(withSubs(mains, on))))
+  return cost, unpriced, short
+end
+ns.shoppingCost = shoppingCost
+
+-- What crafting reagent recipe `id` (and the ticked ones below it) does to
+-- the shopping list, the others as on(id) says: craft / buy = list cost
+-- each way, saving = buy - craft; needed: it can't be bought; unknown: its
+-- craft leaves something unpriced; short: the AH doesn't list enough for it.
+local function craftEffect(mains, on, id)
+  local craft, craftUnpriced, craftShort = shoppingCost(mains, function(x) return x == id or on(x) end)
+  local buy, buyUnpriced, buyShort = shoppingCost(mains, function(x) return x ~= id and on(x) end)
+  return {
+    craft = craft, buy = buy, saving = buy - craft,
+    needed = craftUnpriced < buyUnpriced, unknown = craftUnpriced > buyUnpriced, short = craftShort > buyShort,
+  }
+end
+ns.craftEffect = craftEffect
+
+-- Your tick overrides, per reagent recipe: kept only where they differ from
+-- the craft-or-buy rule, so the rule still decides everything else.
+local function applyChoices(flat)
+  local choices = db.reagentChoices or {}
+  for _, entry in ipairs(flat) do
+    entry.ruleInclude = entry.include
+    local choice = choices[entry.sub.recipeID]
+    if choice ~= nil then entry.include = choice end
+  end
+  return flat
+end
+ns.applyChoices = applyChoices
+
+-- The craftable reagents of several recipes (steps: { recipe, crafts }),
+-- each listed once (parent = index in the merged list), and the steps as
+-- queue entries offering every one of them (for shoppingCost). Each step
+-- gets tree = { [recipeID] = true } of its own reagent recipes.
+local function mergeTrees(steps, byProduct)
+  local merged, indexOf, mains, defs = {}, {}, {}, {}
+  for _, step in ipairs(steps) do
+    local main = recipeDef(step.recipe)
+    main.count, main.subs = step.crafts, {}
+    step.tree = {}
+    local map = {}
+    for i, entry in ipairs(subTree(step.recipe, step.crafts, byProduct)) do
+      local id = entry.sub.recipeID
+      step.tree[id] = true
+      defs[id] = defs[id] or recipeDef(entry.sub)
+      main.subs[id] = defs[id]
+      if not indexOf[id] then
+        entry.parent = entry.parent and map[entry.parent]
+        merged[#merged + 1] = entry
+        indexOf[id] = #merged
+      end
+      map[i] = indexOf[id]
+    end
+    mains[#mains + 1] = main
+  end
+  return merged, mains
+end
+ns.mergeTrees = mergeTrees
+
+local function effectWhy(effect)
+  if effect.needed then return "no current AH price" end
+  if effect.unknown then return "craft cost unknown" end
+  if effect.short then return "not enough of its reagents on the AH" end
+  if effect.saving > 0 then return "saves " .. API.Money(effect.saving) end
+  return "cheaper to buy"
+end
+ns.effectWhy = effectWhy
+
+-- The craft-or-buy rule, for a merged reagent list and its mains: craft a
+-- reagent when that makes the shopping list cheaper or it can't be bought,
+-- never when that leaves something unpriced or needs more than the AH
+-- lists. Starts from the per-unit comparison and decides top-down, twice
+-- (a reagent's answer can change once the ones below it are decided).
+-- Mains' reagent recipes not in the list stay crafted.
+local function recommend(flat, mains)
+  local state = {}
+  for _, entry in ipairs(flat) do state[entry.sub.recipeID] = entry.include and true or false end
+  local function on(id) return state[id] ~= false end
+  for _ = 1, 2 do
+    for _, entry in ipairs(flat) do
+      local id = entry.sub.recipeID
+      local effect = craftEffect(mains, on, id)
+      state[id] = effect.needed or (not effect.unknown and not effect.short and effect.saving > 0)
+      entry.why = effectWhy(effect)
+    end
+  end
+  for _, entry in ipairs(flat) do entry.include = state[entry.sub.recipeID] end
+  return flat
+end
+ns.recommend = recommend
 
 local function firstCraftable()
   for index, entry in ipairs(computeQueue()) do

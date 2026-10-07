@@ -2,6 +2,12 @@
 
 local ADDON, ns = ...
 local ROW_HEIGHT, API, RED, GREY, GREEN, DIFFICULTY_COLORS = ns.ROW_HEIGHT, ns.API, ns.RED, ns.GREY, ns.GREEN, ns.DIFFICULTY_COLORS
+local ORANGE = "|cffff9933" -- undercut marker
+
+-- "1 listed at 51c, most at 1s 69c" for an undercut ({ cheapest, market, below }).
+local function undercutText(u)
+  return ("%d listed from %s, most at %s"):format(u.below, API.Money(u.cheapest), API.Money(u.market))
+end
 local log, professionInfo, expandAll, isBoP, ownedAuctions, evaluate = ns.log, ns.professionInfo, ns.expandAll, ns.isBoP, ns.ownedAuctions, ns.evaluate
 local readRecipes, openRecipeInUI, closeHost, updateScanButton, startScan = ns.readRecipes, ns.openRecipeInUI, ns.closeHost, ns.updateScanButton, ns.startScan
 local db
@@ -81,10 +87,14 @@ local function showRecipeTooltip(row)
       right = API.Money(reagent.price * reagent.count)
       if reagent.count > 1 then right = right .. GREY .. " (" .. API.Money(reagent.price) .. " ea)|r" end
       if reagent.src == "vendor" then right = right .. GREY .. " vendor|r" end
+      if reagent.short then right = right .. RED .. " not enough listed|r" end
     else
       right = RED .. "no price|r"
     end
     GameTooltip:AddDoubleLine(left, right, 0.85, 0.85, 0.85, 1, 1, 1)
+    if reagent.undercut then
+      GameTooltip:AddLine("    " .. ORANGE .. "! undercut: " .. undercutText(reagent.undercut) .. "|r", 1, 1, 1)
+    end
   end
   local cost = API.Money(recipe.cost)
   if recipe.missing > 0 then cost = cost .. RED .. " +" .. recipe.missing .. " unpriced|r" end
@@ -94,9 +104,13 @@ local function showRecipeTooltip(row)
   elseif recipe.sell then
     local each = recipe.made > 1 and (" x" .. recipe.made) or ""
     GameTooltip:AddDoubleLine("Sells for" .. each, API.Money(recipe.sell * recipe.made), 1, 1, 1, 1, 1, 1)
+    if recipe.productUndercut then
+      GameTooltip:AddLine("    " .. ORANGE .. "! undercut: " .. undercutText(recipe.productUndercut) ..
+        " (profit uses the cheapest)|r", 1, 1, 1, true)
+    end
     GameTooltip:AddDoubleLine("After 5% AH cut", API.Money(recipe.sell * recipe.made * (1 - API.AH_CUT)), 0.85, 0.85, 0.85, 1, 1, 1)
     local good = recipe.profit >= 0
-    GameTooltip:AddDoubleLine("Profit", API.Money(recipe.profit), 1, 1, 1, good and 0.2 or 1, good and 1 or 0.3, 0.2)
+    GameTooltip:AddDoubleLine("Profit", API.Money(recipe.displayProfit), 1, 1, 1, good and 0.2 or 1, good and 1 or 0.3, 0.2)
   else
     GameTooltip:AddDoubleLine("Sells for", RED .. "no price|r", 1, 1, 1, 1, 1, 1)
   end
@@ -196,18 +210,21 @@ local function fillRow(row, recipe)
 
   local cost = API.Money(recipe.cost)
   if recipe.missing > 0 then cost = cost .. RED .. " +" .. recipe.missing .. "?|r" end
+  if recipe.undercut then cost = cost .. ORANGE .. "!|r" end
   c.cost:SetText(cost)
 
   if recipe.isEnchant then
     c.sell:SetText(GREY .. "enchant|r")
   elseif recipe.sell then
-    c.sell:SetText(recipe.productStale and (GREY .. API.Money(recipe.sell * recipe.made) .. "|r") or API.Money(recipe.sell * recipe.made))
+    c.sell:SetText((recipe.productStale and (GREY .. API.Money(recipe.sell * recipe.made) .. "|r") or API.Money(recipe.sell * recipe.made))
+      .. (recipe.productUndercut and (ORANGE .. "!|r") or ""))
   else
     c.sell:SetText(RED .. "no price|r")
   end
 
   if recipe.profit then
-    local text = API.Money(recipe.profit) .. (recipe.incomplete and (RED .. "*|r") or "")
+    -- Shown with Auctionator's rounding; sorting, filters and color use the exact profit.
+    local text = API.Money(recipe.displayProfit) .. (recipe.incomplete and (RED .. "*|r") or "")
     c.profit:SetText(text)
     c.profit:SetTextColor(recipe.profit >= 0 and 0.2 or 1, recipe.profit >= 0 and 1 or 0.3, 0.2)
     c.margin:SetText(recipe.margin and ((recipe.margin >= 0 and GREEN or RED) .. math.floor(recipe.margin * 100 + 0.5) .. "%|r") or "")
@@ -269,8 +286,8 @@ function refresh()
   end
   -- Keep the reagent panel's Queue profitable preview current.
   if ns.popup and ns.popup:IsShown() and not ns.popup.recipe then ns.showBatch() end -- prices may have changed
-  panel.summary:SetText(("%d recipes, %d profitable.  %s* = incomplete (missing or week-old prices, hover for details)|r")
-    :format(#recipes, profitable, GREY))
+  panel.summary:SetText(("%d recipes, %d profitable.  %s* = incomplete prices, %s!%s = undercut (hover for details)|r")
+    :format(#recipes, profitable, GREY, ORANGE, GREY))
 
   for _, header in ipairs(panel.headers) do
     local arrow = ""

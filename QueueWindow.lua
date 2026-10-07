@@ -195,6 +195,7 @@ updateQueueWindow = function()
 
   local missing, cost, unpriced = queueShopping()
   queueWin.missingList = missing
+  queueWin.profit:SetText(ns.queueProfitLine(cost))
   if #missing == 0 then
     queueWin.missing:SetText(#queue > 0 and "|cff33ff33You have every reagent for the queue.|r" or "")
   else
@@ -268,7 +269,7 @@ end
 local function createQueueWindow()
   queueWin = CreateFrame("Frame", "ProfessionProfitQueueWindow", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
   ns.queueWin = queueWin
-  queueWin:SetSize(330, 192 + QROWS * QROW)
+  queueWin:SetSize(330, 206 + QROWS * QROW)
   queueWin:SetFrameStrata("HIGH")
   queueWin:SetClampedToScreen(true)
   queueWin:EnableMouse(true)
@@ -330,8 +331,27 @@ local function createQueueWindow()
   queueWin.empty:SetPoint("TOP", scroll, "TOP", 0, -20)
   queueWin.empty:SetText("Nothing queued. Use + in the Profit table.")
 
+  -- Profit of the queue, and what crafting its reagents saves on the shopping list.
+  queueWin.profit = queueWin:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  queueWin.profit:SetPoint("TOPLEFT", scroll, "BOTTOMLEFT", 2, -8)
+  queueWin.profit:SetPoint("RIGHT", -12, 0)
+  queueWin.profit:SetJustifyH("LEFT")
+  queueWin.profit:SetWordWrap(false)
+  local profitHover = CreateFrame("Frame", nil, queueWin)
+  profitHover:SetAllPoints(queueWin.profit)
+  profitHover:EnableMouse(true)
+  profitHover:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Queue profit")
+    GameTooltip:AddLine("Profit of the queued items as the Profit table prices them (each reagent bought), plus what crafting the ticked reagents saves.", 1, 1, 1, true)
+    GameTooltip:AddLine("From reagents: how much cheaper (or dearer) the Missing list is with the ticked reagent crafts than with every reagent bought. Untick Craft reagents to see the profit without them.", 1, 1, 1, true)
+    GameTooltip:AddLine("Items of a profession that isn't open are unpriced.", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end)
+  profitHover:SetScript("OnLeave", GameTooltip_Hide)
+
   queueWin.missing = queueWin:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  queueWin.missing:SetPoint("TOPLEFT", scroll, "BOTTOMLEFT", 2, -8)
+  queueWin.missing:SetPoint("TOPLEFT", queueWin.profit, "BOTTOMLEFT", 0, -4)
   queueWin.missing:SetPoint("RIGHT", -12, 0)
   queueWin.missing:SetHeight(42)
   queueWin.missing:SetJustifyH("LEFT")
@@ -346,10 +366,12 @@ local function createQueueWindow()
     GameTooltip:AddLine("Missing reagents", 1, 0.82, 0)
     for _, item in ipairs(list) do
       local left = item.count .. "x " .. item.name .. (item.bank > 0 and ("  |cffa0a0a0" .. item.bank .. " in bank|r") or "")
-      local right = item.buy == 0 and "|cffa0a0a0from bank|r" or (item.price and API.Money(item.price * item.buy) or "no price")
+      local right = item.buy == 0 and "|cffa0a0a0from bank|r" or (item.total and API.Money(item.total) or "no price")
+      if item.short then right = right .. " |cffff6666not enough listed|r" end
+      if item.undercut then right = right .. " |cffff9933!|r" end
       GameTooltip:AddDoubleLine(left, right, 1, 1, 1, 1, 1, 1)
     end
-    GameTooltip:AddLine("Counts what's in your bags; the bank is noted separately.", 0.6, 0.6, 0.6, true)
+    GameTooltip:AddLine("Counts what's in your bags; the bank is noted separately. Costs are for buying that many (cheapest listings first) once Scan AH has read the order books; |cffff9933!|r = undercut.", 0.6, 0.6, 0.6, true)
     GameTooltip:Show()
   end)
   missingHover:SetScript("OnLeave", GameTooltip_Hide)

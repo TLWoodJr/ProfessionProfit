@@ -3,6 +3,7 @@
 local ADDON, ns = ...
 local msg, log, hostShown, professionInfo, evaluate, readRecipes = ns.msg, ns.log, ns.hostShown, ns.professionInfo, ns.evaluate, ns.readRecipes
 local craftQueue, computeQueue, inOpenProfession, recipeDef, subTree, effectivelyIncluded = ns.craftQueue, ns.computeQueue, ns.inOpenProfession, ns.recipeDef, ns.subTree, ns.effectivelyIncluded
+local mergeTrees, recommend, applyChoices = ns.mergeTrees, ns.recommend, ns.applyChoices
 local firstCraftable, refresh = ns.firstCraftable, ns.refresh
 local db
 ns.onInit(function(saved) db = saved end)
@@ -221,25 +222,37 @@ local function recompileQueue()
     if recipe.recipeID then byID[recipe.recipeID] = recipe end
   end
   local crafting, buying, done, other = {}, {}, 0, {}
+  local steps, others = {}, {}
   for _, main in ipairs(craftQueue()) do
     local recipe = inOpenProfession(main) and byID[main.recipeID]
     if recipe then
       done = done + 1
       local fresh = recipeDef(recipe)
       main.reagents, main.made, main.productID = fresh.reagents, fresh.made, fresh.productID
-      main.subs = {}
-      local flat = subTree(recipe, main.count, byProduct)
-      for i, entry in ipairs(flat) do
-        if effectivelyIncluded(flat, i) then
-          main.subs[entry.sub.recipeID] = recipeDef(entry.sub)
-          crafting[entry.sub.name] = entry.why
-        elseif not crafting[entry.sub.name] then
-          buying[entry.sub.name] = entry.include and "level above is bought" or entry.why
-        end
-      end
-    elseif not inOpenProfession(main) then
-      other[main.prof or "another profession"] = true
+      steps[#steps + 1] = { main = main, recipe = recipe, crafts = main.count }
+    else
+      others[#others + 1] = main
+      if not inOpenProfession(main) then other[main.prof or "another profession"] = true end
     end
+  end
+  -- Craft or buy by what it does to the whole queue's shopping list (and
+  -- your remembered ticks).
+  local merged, mains = mergeTrees(steps, byProduct)
+  for _, main in ipairs(others) do mains[#mains + 1] = main end
+  applyChoices(recommend(merged, mains))
+  local chosen = {}
+  for i, entry in ipairs(merged) do
+    if effectivelyIncluded(merged, i) then
+      chosen[entry.sub.recipeID] = recipeDef(entry.sub)
+      crafting[entry.sub.name] = entry.include ~= entry.ruleInclude and "your choice" or entry.why
+    else
+      buying[entry.sub.name] = not entry.include and (entry.include ~= entry.ruleInclude and "your choice" or entry.why)
+        or "level above is bought"
+    end
+  end
+  for _, step in ipairs(steps) do
+    step.main.subs = {}
+    for id in pairs(step.tree) do step.main.subs[id] = chosen[id] end
   end
   local function describe(t)
     local parts = {}
