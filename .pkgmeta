@@ -7,5 +7,8 @@ externals:
     url: https://github.com/TLWoodJr/LibCraftProfit-1.0
     tag: latest
 
+required-dependencies:
+  - auctionator
+
 ignore:
   - README.md

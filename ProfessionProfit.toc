@@ -6,6 +6,7 @@
 ## X-License: GPL-3.0
 ## Category-enUS: Professions
 ## X-Category: Tradeskill
+## X-Curse-Project-ID: 1759332
 ## SavedVariables: ProfessionProfitDB
 ## Dependencies: Auctionator
 ## OptionalDeps: LibCraftProfit-1.0, DevLog, Skillet
