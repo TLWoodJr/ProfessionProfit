@@ -478,7 +478,7 @@ local function queueProfit()
   local _, cost, unpriced, short = shoppingFor((computeQueue()), nil, true)
   local sales, unsold = 0, 0
   for _, main in ipairs(queue) do
-    local sell = main.productID and API.AHPrice(main.productID)
+    local sell = main.productID and API.SellPrice(main.productID)
     if sell then
       sales = sales + sell * (main.made or 1) * main.count * (1 - API.AH_CUT)
     else

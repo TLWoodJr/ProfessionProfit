@@ -88,8 +88,8 @@ local function searchAuctionator(prof, items)
 end
 
 -- Scan AH button. Step 1: the order book (every listing) of each reagent
--- and stackable crafted item, so costs are what the amount you need really
--- costs, and undercuts show. Then step 2 above. Clicking again stops it.
+-- and crafted item, so costs are what the amount you need really costs,
+-- and undercuts show. Then step 2 above. Clicking again stops it.
 local function startScan(retries)
   if API.IsScanningBooks() then
     API.CancelBookScan()
