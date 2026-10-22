@@ -1,8 +1,9 @@
 ## Interface: 16001
 ## Title: ProfessionProfit
 ## Notes: Profit table tab on the profession window. Prices every learned recipe from the AH while the auction house is open.
-## Author: woodt
+## Author: magnumwood
 ## Version: @project-version@
+## X-License: GPL-3.0
 ## Category-enUS: Professions
 ## X-Category: Tradeskill
 ## SavedVariables: ProfessionProfitDB
