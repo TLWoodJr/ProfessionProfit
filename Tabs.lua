@@ -1,7 +1,7 @@
 -- ProfessionProfit: Recipes / Profit / Queue tabs on the profession window, and attaching to it.
 
 local ADDON, ns = ...
-local RED, msg, log, isModern, baseHost, skilletShown = ns.RED, ns.msg, ns.log, ns.isModern, ns.baseHost, ns.skilletShown
+local RED, msg, log, isModern, baseHost = ns.RED, ns.msg, ns.log, ns.isModern, ns.baseHost
 local hostFrame, hostShown, professionInfo, tabs, logEnvironment, refreshSoon = ns.hostFrame, ns.hostShown, ns.professionInfo, ns.tabs, ns.logEnvironment, ns.refreshSoon
 local raiseAbove, createPanel, toggleQueueWindow, syncQueueWindow = ns.raiseAbove, ns.createPanel, ns.toggleQueueWindow, ns.syncQueueWindow
 
@@ -35,7 +35,7 @@ ns.selectTab = selectTab
 -- Used by the Profit table: clicking a row opens that recipe on the Recipes tab.
 function ns.showRecipesTab() selectTab(1) end
 
--- Move the panel and tabs onto a profession window (Blizzard's or Skillet's).
+-- Move the panel and tabs onto the profession window.
 local function attachTo(host)
   if not ns.panel or not host or ns.panel.host == host then return end
   log("attaching to", host)
@@ -54,23 +54,6 @@ local function attachTo(host)
     end
   end
   if ns.panel:IsShown() then raiseAbove(host) end
-end
-
-local skilletHooked = false
-local function hookSkillet()
-  if skilletHooked or not SkilletFrame then return end
-  skilletHooked = true
-  SkilletFrame:HookScript("OnShow", function()
-    log("SkilletFrame OnShow")
-    attachTo(SkilletFrame)
-    C_Timer.After(0.3, syncQueueWindow)
-    refreshSoon()
-  end)
-  SkilletFrame:HookScript("OnHide", function()
-    local base = baseHost()
-    if base and base:IsShown() then attachTo(base) end
-  end)
-  if SkilletFrame:IsShown() then attachTo(SkilletFrame) end
 end
 
 -- The overview page (no profession picked) has no recipes to price: hide
@@ -105,8 +88,7 @@ local function hookBase()
   baseHooked = true
   base:HookScript("OnShow", function()
     log("host OnShow")
-    -- Skillet hides Blizzard's window as soon as it opens; stay on Skillet.
-    if not skilletShown() then attachTo(base) end
+    attachTo(base)
     refreshSoon()
     updateTabsForOverview()
     C_Timer.After(0.3, syncQueueWindow)
@@ -124,7 +106,7 @@ local function hookBase()
 end
 
 local function buildUI()
-  local host = baseHost() or (SkilletFrame ~= nil and SkilletFrame) or nil
+  local host = baseHost()
   if built or not host then return end
   built = true
   ns.built = built
@@ -142,13 +124,12 @@ local function buildUI()
   ns.updateQueueWindow()
   if not isModern() and TradeSkillFrame_Update then hooksecurefunc("TradeSkillFrame_Update", refreshSoon) end
   hookBase()
-  hookSkillet()
   selectTab(1)
   log("UI built; tab1:", tabs[1], "tab2:", tabs[2])
 end
 
 local function createTabs(reason)
-  if built then hookBase() hookSkillet() return end
+  if built then hookBase() return end
   if not hostFrame() then return end
   local ok, err = xpcall(buildUI, function(e) return tostring(e) .. "\n" .. (debugstack and debugstack(2) or "") end)
   if ok then

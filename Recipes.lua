@@ -1,7 +1,7 @@
 -- ProfessionProfit: Reading the open profession's learned recipes, and opening a recipe in the window.
 
 local ADDON, ns = ...
-local msg, log, idFromLink, nameFromLink, isModern, skilletShown = ns.msg, ns.log, ns.idFromLink, ns.nameFromLink, ns.isModern, ns.skilletShown
+local msg, log, idFromLink, nameFromLink, isModern = ns.msg, ns.log, ns.idFromLink, ns.nameFromLink, ns.isModern
 local hostFrame, professionInfo, itemName = ns.hostFrame, ns.professionInfo, ns.itemName
 local db
 ns.onInit(function(saved) db = saved end)
@@ -185,17 +185,6 @@ local function openModernRecipe(recipe, step)
 end
 
 local function openRecipeInUI(recipe)
-  if skilletShown() and Skillet and Skillet.SetSelectedSkill and recipe.recipeID then
-    local index = Skillet.data and Skillet.data.skillIndexLookup and Skillet.data.skillIndexLookup[recipe.recipeID]
-    log("open recipe in Skillet", recipe.name, recipe.recipeID, "index", index or "none")
-    if index then
-      pcall(Skillet.SetSelectedSkill, Skillet, index)
-      pcall(Skillet.UpdateTradeSkillWindow, Skillet)
-    else
-      msg(("%s isn't in Skillet's recipe list (check Skillet's filters)."):format(recipe.name))
-    end
-    return
-  end
   if isModern() then
     openModernRecipe(recipe)
     return
@@ -213,10 +202,6 @@ end
 ns.openRecipeInUI = openRecipeInUI
 
 local function closeHost()
-  if skilletShown() then
-    pcall(HideUIPanel, SkilletFrame)
-    if SkilletFrame:IsShown() then SkilletFrame:Hide() end
-  end
   if isModern() and C_TradeSkillUI.CloseTradeSkill then
     pcall(C_TradeSkillUI.CloseTradeSkill)
   end

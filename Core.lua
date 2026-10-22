@@ -98,21 +98,13 @@ local function baseHost()
 end
 ns.baseHost = baseHost
 
--- Skillet replaces Blizzard's window with its own SkilletFrame.
-local function skilletShown()
-  return SkilletFrame ~= nil and SkilletFrame:IsShown()
-end
-ns.skilletShown = skilletShown
-
--- The window our tab and panel attach to right now.
+-- The window our tab and panel attach to.
 local function hostFrame()
-  if skilletShown() then return SkilletFrame end
   return baseHost()
 end
 ns.hostFrame = hostFrame
 
 local function hostShown()
-  if skilletShown() then return true end
   local host = baseHost()
   return host and host:IsShown()
 end

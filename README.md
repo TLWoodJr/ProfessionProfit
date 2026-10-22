@@ -23,7 +23,6 @@ the numbers match its "To Craft" column.
   with "Buy items from vendors" or `/pp vendor`.
 - **Craft all**: crafts the queue one press at a time with a key binding (Key Bindings > AddOns > ProfessionProfit).
   A pop-up shows each craft's profit.
-- Works with Skillet's window if you use it.
 
 ## Commands
 
