@@ -2,7 +2,7 @@
 
 local ADDON, ns = ...
 local API, log, isModern, hostShown, professionInfo, professionName = ns.API, ns.log, ns.isModern, ns.hostShown, ns.professionInfo, ns.professionName
-local itemName, GetItemCount, charKey = ns.itemName, ns.GetItemCount, ns.charKey
+local itemName, GetItemCount, charKey, priceOpts = ns.itemName, ns.GetItemCount, ns.charKey, ns.priceOpts
 local db
 ns.onInit(function(saved) db = saved end)
 
@@ -27,7 +27,7 @@ end
 ns.queuedCount = queuedCount
 
 -- Restock targets: how many of an item you want to own - the single source
--- of truth for Top up. Set in the + view's "Restock to" box, or remembered
+-- of truth for Use Restock. Set in the + view's "Restock to" box, or remembered
 -- when you queue more than one there and the item has none; edited and
 -- cleared in the Restocking window.
 -- db.queueTargets[recipeID] = { n = target, name = recipe name, item = itemID }
@@ -50,8 +50,8 @@ local function setQueueTarget(recipe, n)
 end
 ns.setQueueTarget = setQueueTarget
 
--- Number of crafts to queue for a recipe. Top up off: Qty crafts, targets
--- ignored. Top up on: enough to own its restock target (or Qty when it has
+-- Number of crafts to queue for a recipe. Use Restock off: Qty crafts, targets
+-- ignored. Use Restock on: enough to own its restock target (or Qty when it has
 -- none), counting your stock (bags, bank, your auctions) and what's queued.
 local function craftsToQueue(recipe)
   local qty = db.queueQty or 1
@@ -378,7 +378,9 @@ ns.craftableNow = craftableNow
 -- Reagents still missing for a crafting plan (computeQueue's shape): needs
 -- minus bags/bank minus what earlier entries will craft. Returns list,
 -- estimated cost, unpriced items, items the AH doesn't list enough of.
-local function shoppingFor(entries)
+-- opts: pricing (default: Buy items from vendors as set). all: price
+-- everything the plan uses, as if your bags and bank were empty.
+local function shoppingFor(entries, opts, all)
   local need, produced, names = {}, {}, {}
   for _, entry in ipairs(entries) do
     for _, reagent in ipairs(entry.reagents) do
@@ -393,14 +395,14 @@ local function shoppingFor(entries)
   end
   local list, cost, unpriced, shortCount = {}, 0, 0, 0
   for id, n in pairs(need) do
-    local bags = bagCount(id)
+    local bags = all and 0 or bagCount(id)
     local short = n - bags - (produced[id] or 0)
     if short > 0 then
-      local bank = math.max(0, ((GetItemCount and GetItemCount(id, true)) or bags) - bags)
+      local bank = all and 0 or math.max(0, ((GetItemCount and GetItemCount(id, true)) or bags) - bags)
       local buy = math.max(0, short - bank)
       -- What buying that many really costs (walks the order book).
       local total, info = nil, nil
-      if buy > 0 then total, info = API.BuyCost(id, buy) end
+      if buy > 0 then total, info = API.BuyCost(id, buy, opts or priceOpts()) end
       if buy > 0 then
         if total then cost = cost + total else unpriced = unpriced + 1 end
       end
@@ -443,9 +445,9 @@ end
 ns.withSubs = withSubs
 
 -- Shopping list for mains crafting the reagents on(id) allows (the rest are
--- bought): cost, unpriced, short.
-local function shoppingCost(mains, on)
-  local _, cost, unpriced, short = shoppingFor((planEntries(withSubs(mains, on))))
+-- bought): cost, unpriced, short. opts, all: as for shoppingFor.
+local function shoppingCost(mains, on, opts, all)
+  local _, cost, unpriced, short = shoppingFor((planEntries(withSubs(mains, on))), opts, all)
   return cost, unpriced, short
 end
 ns.shoppingCost = shoppingCost
@@ -454,15 +456,40 @@ ns.shoppingCost = shoppingCost
 -- the shopping list, the others as on(id) says: craft / buy = list cost
 -- each way, saving = buy - craft; needed: it can't be bought; unknown: its
 -- craft leaves something unpriced; short: the AH doesn't list enough for it.
-local function craftEffect(mains, on, id)
-  local craft, craftUnpriced, craftShort = shoppingCost(mains, function(x) return x == id or on(x) end)
-  local buy, buyUnpriced, buyShort = shoppingCost(mains, function(x) return x ~= id and on(x) end)
+local function craftEffect(mains, on, id, opts)
+  local craft, craftUnpriced, craftShort = shoppingCost(mains, function(x) return x == id or on(x) end, opts)
+  local buy, buyUnpriced, buyShort = shoppingCost(mains, function(x) return x ~= id and on(x) end, opts)
   return {
     craft = craft, buy = buy, saving = buy - craft,
     needed = craftUnpriced < buyUnpriced, unknown = craftUnpriced > buyUnpriced, short = craftShort > buyShort,
   }
 end
 ns.craftEffect = craftEffect
+
+-- The queue's profit, priced like its shopping list (Buy items from
+-- vendors, order books at the real amounts, the reagents it crafts): the
+-- queued items' AH value after the cut, minus every reagent the queue uses
+-- (what's already in your bags and bank too, at what it would cost to buy).
+-- Returns profit, saving (what the reagent crafts save over buying those
+-- reagents; 0 with Craft reagents off), unsold (queued items with no AH
+-- price), incomplete (a reagent unpriced, or more than the AH lists).
+local function queueProfit()
+  local queue = craftQueue()
+  local _, cost, unpriced, short = shoppingFor((computeQueue()), nil, true)
+  local sales, unsold = 0, 0
+  for _, main in ipairs(queue) do
+    local sell = main.productID and API.AHPrice(main.productID)
+    if sell then
+      sales = sales + sell * (main.made or 1) * main.count * (1 - API.AH_CUT)
+    else
+      unsold = unsold + 1
+    end
+  end
+  local saving = 0
+  if not db.skipReagentCrafts then saving = shoppingCost(queue, function() return false end, nil, true) - cost end
+  return math.floor(sales - cost), saving, unsold, unpriced > 0 or short > 0
+end
+ns.queueProfit = queueProfit
 
 -- Your tick overrides, per reagent recipe: kept only where they differ from
 -- the craft-or-buy rule, so the rule still decides everything else.
@@ -520,15 +547,15 @@ ns.effectWhy = effectWhy
 -- never when that leaves something unpriced or needs more than the AH
 -- lists. Starts from the per-unit comparison and decides top-down, twice
 -- (a reagent's answer can change once the ones below it are decided).
--- Mains' reagent recipes not in the list stay crafted.
-local function recommend(flat, mains)
+-- Mains' reagent recipes not in the list stay crafted. opts: pricing.
+local function recommend(flat, mains, opts)
   local state = {}
   for _, entry in ipairs(flat) do state[entry.sub.recipeID] = entry.include and true or false end
   local function on(id) return state[id] ~= false end
   for _ = 1, 2 do
     for _, entry in ipairs(flat) do
       local id = entry.sub.recipeID
-      local effect = craftEffect(mains, on, id)
+      local effect = craftEffect(mains, on, id, opts)
       state[id] = effect.needed or (not effect.unknown and not effect.short and effect.saving > 0)
       entry.why = effectWhy(effect)
     end
@@ -537,6 +564,93 @@ local function recommend(flat, mains)
   return flat
 end
 ns.recommend = recommend
+
+------------------------------------------------------------------------------
+-- Buying the queue's vendor-sold reagents when you open a merchant (Buy
+-- items from vendors ticked), after you confirm the total: what the
+-- Missing list still needs, skipping
+-- items that cost tokens or honor, capped by limited stock and your gold.
+------------------------------------------------------------------------------
+
+local function merchantItem(i)
+  local info = C_MerchantFrame and C_MerchantFrame.GetItemInfo and C_MerchantFrame.GetItemInfo(i)
+  if info then return info.price, info.stackCount, info.numAvailable, info.isPurchasable, info.hasExtendedCost end
+  if GetMerchantItemInfo then
+    local _, _, price, stack, available, purchasable, _, extended = GetMerchantItemInfo(i)
+    return price, stack, available, purchasable, extended
+  end
+end
+
+local merchantBuying = false
+local function buyFromMerchant()
+  if db.noVendor or merchantBuying or not (GetMerchantNumItems and GetMerchantItemID and BuyMerchantItem) then return end
+  local want = {}
+  for _, item in ipairs((queueShopping())) do
+    if item.buy > 0 then want[item.id] = item end
+  end
+  if not next(want) then return end
+  local calls, bought, poor, money = {}, {}, {}, GetMoney()
+  for i = 1, GetMerchantNumItems() do
+    local item = want[GetMerchantItemID(i)]
+    local price, stack, available, purchasable, extended = merchantItem(i)
+    if item and price and price > 0 and purchasable ~= false and not extended then
+      stack = math.max(stack or 1, 1)
+      -- Items sold in bundles are bought a bundle per call; others in as
+      -- many per call as the merchant allows.
+      local purchases = math.ceil(item.buy / stack)
+      if available and available >= 0 then purchases = math.min(purchases, available) end
+      local affordable = math.floor(money / price)
+      if affordable < purchases then poor[#poor + 1] = item.name end
+      purchases = math.min(purchases, affordable)
+      if purchases > 0 then
+        money = money - purchases * price
+        bought[#bought + 1] = ("%dx %s"):format(purchases * stack, item.name)
+        if stack > 1 then
+          for _ = 1, purchases do calls[#calls + 1] = { i } end
+        else
+          local per = math.max((GetMerchantItemMaxStack and GetMerchantItemMaxStack(i)) or 1, 1)
+          local left = purchases
+          while left > 0 do
+            calls[#calls + 1] = { i, math.min(left, per) }
+            left = left - per
+          end
+        end
+      end
+    end
+  end
+  if #calls == 0 then
+    if #poor > 0 then ns.msg("Not enough gold to buy any of: " .. table.concat(poor, ", ")) end
+    return
+  end
+  local spend = GetMoney() - money
+  -- Nothing is bought until you confirm.
+  StaticPopupDialogs.PROFESSIONPROFIT_VENDOR_BUY = StaticPopupDialogs.PROFESSIONPROFIT_VENDOR_BUY or {
+    text = "%s", button1 = PURCHASE or "Buy", button2 = CANCEL or "Cancel",
+    timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+  }
+  local dialog = StaticPopupDialogs.PROFESSIONPROFIT_VENDOR_BUY
+  dialog.OnAccept = function()
+    ns.msg(("Buying for the queue: %s (%s)."):format(table.concat(bought, ", "), API.Money(spend)))
+    log("vendor buy", #calls, "purchases", table.concat(bought, ", "))
+    -- One purchase at a time, a moment apart, while the merchant stays open.
+    merchantBuying = true
+    for n, call in ipairs(calls) do
+      C_Timer.After((n - 1) * 0.2, function()
+        if MerchantFrame and MerchantFrame:IsShown() then BuyMerchantItem(call[1], call[2]) end
+        if n == #calls then merchantBuying = false end
+      end)
+    end
+  end
+  local text = ("ProfessionProfit: buy reagents for the craft queue?\n\n%s\n\nTotal: %s"):format(
+    table.concat(bought, "\n"), API.Money(spend))
+  if #poor > 0 then text = text .. "\n|cffff6666Not enough gold for all of: " .. table.concat(poor, ", ") .. "|r" end
+  StaticPopup_Show("PROFESSIONPROFIT_VENDOR_BUY", text)
+end
+local function cancelMerchantBuy()
+  if StaticPopup_Hide then StaticPopup_Hide("PROFESSIONPROFIT_VENDOR_BUY") end
+end
+ns.cancelMerchantBuy = cancelMerchantBuy
+ns.buyFromMerchant = buyFromMerchant
 
 local function firstCraftable()
   for index, entry in ipairs(computeQueue()) do

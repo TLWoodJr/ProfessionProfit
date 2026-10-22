@@ -160,7 +160,7 @@ do
     clear:SetScript("OnEnter", function(self)
       GameTooltip:SetOwner(self, "ANCHOR_TOP")
       GameTooltip:AddLine("Clear all targets")
-      GameTooltip:AddLine("Shift-click to forget every restock target. Top up then fills everything to Qty.", 1, 1, 1, true)
+      GameTooltip:AddLine("Shift-click to forget every restock target. Use Restock then fills everything to Qty.", 1, 1, 1, true)
       GameTooltip:Show()
     end)
     clear:SetScript("OnLeave", GameTooltip_Hide)

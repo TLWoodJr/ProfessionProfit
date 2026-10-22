@@ -20,7 +20,7 @@ for _, event in ipairs({ "ADDON_LOADED", "PLAYER_LOGIN", "TRADE_SKILL_SHOW", "TR
   "BAG_UPDATE_DELAYED", "GET_ITEM_INFO_RECEIVED", "OWNED_AUCTIONS_UPDATED",
   "PLAYERBANKSLOTS_CHANGED", "BANKFRAME_OPENED", "UNIT_SPELLCAST_SUCCEEDED",
   "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_FAILED",
-  "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_MONEY", "TRAINER_SHOW", "TRAINER_CLOSED" }) do
+  "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_MONEY", "TRAINER_SHOW", "TRAINER_CLOSED", "MERCHANT_SHOW", "MERCHANT_CLOSED" }) do
   pcall(frame.RegisterEvent, frame, event)
 end
 
@@ -53,7 +53,7 @@ frame:SetScript("OnEvent", function(_, event, arg, ...)
       end)
       db.queueQty = db.queueQty or 1
       db.recipeCache = nil -- from an old auto-scan; nothing reads it
-      -- Top up starts ticked every session; unticking it lasts until /reload.
+      -- Use Restock starts ticked every session; unticking it lasts until /reload.
       db.queueTopUp, db.topUpDefaulted = true, nil
     end
     -- The profession window may come from an addon with a different name on
@@ -65,6 +65,13 @@ frame:SetScript("OnEvent", function(_, event, arg, ...)
 
   if event == "PLAYER_MONEY" then
     mailMoneyChanged()
+    return
+  elseif event == "MERCHANT_SHOW" then
+    -- Merchant item info can lag the event a little.
+    C_Timer.After(0.3, ns.buyFromMerchant)
+    return
+  elseif event == "MERCHANT_CLOSED" then
+    ns.cancelMerchantBuy()
     return
   elseif event == "MAIL_SHOW" then
     ns.mailOpen, ns.lastMoney, ns.mailSubject, ns.mailTakeTime = true, GetMoney(), nil, nil
@@ -145,6 +152,8 @@ SlashCmdList.PROFESSIONPROFIT = function(input)
   elseif cmd == "reagents" then
     if ns.popup then ns.popup.closed = nil end
     if ns.queueWin and ns.queueWin:IsShown() then showReagentWindow() else msg("Open the craft queue to see its reagents.") end
+  elseif cmd == "vendor" then
+    ns.setBuyFromVendors(db.noVendor and true or false)
   elseif cmd == "toast" then
     local arg = (input or ""):match("^%s*%S+%s+(%S+)")
     arg = arg and arg:lower()
@@ -157,6 +166,8 @@ SlashCmdList.PROFESSIONPROFIT = function(input)
       db.craftToastOff = not db.craftToastOff or nil
       msg("craft profit pop-up " .. (db.craftToastOff and "off." or "on."))
     end
+  elseif cmd == "dump" then
+    ns.dumpRecipes()
   elseif cmd == "debug" then
     createTabs("/pp debug")
     logEnvironment("/pp debug")
@@ -172,6 +183,7 @@ SlashCmdList.PROFESSIONPROFIT = function(input)
     print("  /pp scan - scan AH prices for the open profession")
     print("  /pp queue - show/hide the craft queue")
     print("  /pp reagents - show the queue's reagent window again after closing it")
+    print("  /pp vendor - turn Buy items from vendors on/off")
     print("  /pp toast - turn the craft profit pop-up on/off (/pp toast test to preview)")
     print("  /pp toast mail - turn the mail gold pop-up on/off")
     print("  /pp debug - show diagnostics if the Profit tab is missing")

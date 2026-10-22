@@ -228,6 +228,17 @@ ns.stockOf = stockOf
 -- Pricing (LibCraftProfit: Auctionator's prices, same rules as its "To Craft")
 ------------------------------------------------------------------------------
 
+-- "Buy items from vendors" (reagent window, /pp vendor): ticked unless
+-- db.noVendor. Unticked, the craft queue's shopping list prices vendor-sold
+-- reagents from the AH (and Scan AH searches them). The Profit table always
+-- uses vendor prices.
+local priceOptions = {}
+local function priceOpts()
+  priceOptions.noVendor = db.noVendor or nil
+  return priceOptions
+end
+ns.priceOpts = priceOpts
+
 local function evaluate(recipe)
   API.Evaluate(recipe)
   if recipe.productID then

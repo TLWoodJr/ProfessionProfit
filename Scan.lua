@@ -33,6 +33,23 @@ local function lastScanTime(prof)
   return db.lastScan[scanKey(prof)]
 end
 
+-- Is the crafted item missing from the AH right now, by today's Scan AH?
+-- Stackable items: today's order book lists none. Others: Auctionator
+-- didn't see it today, though this profession was scanned today. False
+-- when it can't tell (not scanned today).
+local function today(t) return date("%Y%m%d", t) == date("%Y%m%d") end
+local function notListed(recipe)
+  local id = recipe.productID
+  if not id or recipe.isEnchant then return false end
+  local book = API.Book(id)
+  if book and today(book.t) then return #book.rows == 0 end
+  local prof = professionName()
+  local last = prof and lastScanTime(prof)
+  if not (last and today(last)) then return false end
+  return API.PriceAge(id) ~= 0
+end
+ns.notListed = notListed
+
 local function markScanned(prof)
   db.lastScan = db.lastScan or {}
   db.lastScan[scanKey(prof)] = time()
@@ -60,7 +77,7 @@ ns.updateScanButton = updateScanButton
 -- database (sell prices, and the fallback for items without an order book)
 -- is current too.
 local function searchAuctionator(prof, items)
-  local count, reason = API.Search(items, { force = true, caller = ADDON })
+  local count, reason = API.Search(items, { force = true, caller = ADDON, noVendor = ns.priceOpts().noVendor })
   log("scan", prof, count or 0, reason or "")
   if not count then
     msg(reason)
@@ -102,6 +119,7 @@ local function startScan(retries)
   local ids = {}
   for _, item in ipairs(items) do ids[#ids + 1] = item.id end
   local count, reason = API.ScanBooks(ids, {
+    noVendor = ns.priceOpts().noVendor,
     onProgress = function(done, total)
       if ns.panel then ns.panel.scanButton:SetText("Stop") end
       setStatus(("Reading order books %d/%d..."):format(done, total))

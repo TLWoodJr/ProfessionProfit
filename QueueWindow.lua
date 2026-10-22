@@ -24,8 +24,9 @@ local QROWS = 14
 local SHOPPING_LIST_NAME = "ProfessionProfit Queue"
 
 -- Send the queue's missing reagents to an Auctionator shopping list
--- (exact-name searches with quantities). Vendor-sold reagents are included
--- too (they're often on the AH); chat notes their vendor price to compare.
+-- (exact-name searches with quantities). Vendor-sold reagents are left to
+-- the vendor (bought when you visit one) unless Buy items from vendors is
+-- off; chat lists them.
 -- Show Auctionator's Shopping tab and search a list, the way its own
 -- MultiSearch API does (tab click + ListSearchRequested). Internal API, so
 -- everything is checked and guarded.
@@ -59,11 +60,12 @@ local function makeShoppingList()
   local searches, vendor, bankItems = {}, {}, {}
   for _, item in ipairs(missing) do
     local price, src = API.BuyPrice(item.id)
-    if src == "vendor" then
-      vendor[#vendor + 1] = ("%s (%s ea)"):format(item.name, API.Money(price))
+    local fromVendor = src == "vendor" and not db.noVendor
+    if src == "vendor" and item.buy > 0 then
+      vendor[#vendor + 1] = ("%s%s (%s ea)"):format(fromVendor and (item.buy .. "x ") or "", item.name, API.Money(price))
     end
     if item.bank > 0 then bankItems[#bankItems + 1] = item.bank .. "x " .. item.name end
-    if item.buy > 0 then
+    if item.buy > 0 and not fromVendor then
       local ok, search = pcall(aucAPI.ConvertToSearchString, ADDON,
         { searchString = item.name, isExact = true, quantity = item.buy })
       if ok and search then searches[#searches + 1] = search end
@@ -80,7 +82,10 @@ local function makeShoppingList()
       msg("Couldn't create the shopping list: " .. tostring(err))
     end
   end
-  if #vendor > 0 then msg("Also sold by vendors: " .. table.concat(vendor, ", ")) end
+  if #vendor > 0 then
+    msg((db.noVendor and "Also sold by vendors: " or "Buy from a vendor (bought for you when you open one): ")
+      .. table.concat(vendor, ", "))
+  end
   if #bankItems > 0 then msg("Take from your bank: " .. table.concat(bankItems, ", ")) end
   if #searches == 0 and #bankItems > 0 then msg("Nothing to buy - the rest is in your bank.") end
 end
@@ -154,6 +159,20 @@ local function createQueueRow(parent, i)
   return row
 end
 
+-- "Profit: X  (+Y from reagents)", priced like the Missing list.
+local function profitLine()
+  local profit, saving, unsold, incomplete = ns.queueProfit()
+  local text = "Profit: " .. API.Money(profit)
+  if incomplete then text = text .. RED .. " *|r" end
+  if saving > 0 then
+    text = text .. ("  " .. GREEN .. "(+%s from reagents)|r"):format(API.Money(saving))
+  elseif saving < 0 then
+    text = text .. ("  " .. RED .. "(-%s from reagents)|r"):format(API.Money(-saving))
+  end
+  if unsold > 0 then text = text .. GREY .. (" %d not priced"):format(unsold) .. "|r" end
+  return text
+end
+
 updateQueueWindow = function()
   local queue = computeQueue()
   if tabs and tabs[3] then tabs[3]:SetText(("Queue (%d)"):format(#queue)) end
@@ -195,7 +214,7 @@ updateQueueWindow = function()
 
   local missing, cost, unpriced = queueShopping()
   queueWin.missingList = missing
-  queueWin.profit:SetText(ns.queueProfitLine(cost))
+  queueWin.profit:SetText(#queue == 0 and "" or profitLine())
   if #missing == 0 then
     queueWin.missing:SetText(#queue > 0 and "|cff33ff33You have every reagent for the queue.|r" or "")
   else
@@ -343,9 +362,10 @@ local function createQueueWindow()
   profitHover:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:AddLine("Queue profit")
-    GameTooltip:AddLine("Profit of the queued items as the Profit table prices them (each reagent bought), plus what crafting the ticked reagents saves.", 1, 1, 1, true)
-    GameTooltip:AddLine("From reagents: how much cheaper (or dearer) the Missing list is with the ticked reagent crafts than with every reagent bought. Untick Craft reagents to see the profit without them.", 1, 1, 1, true)
-    GameTooltip:AddLine("Items of a profession that isn't open are unpriced.", 0.7, 0.7, 0.7, true)
+    GameTooltip:AddLine("What the queued items sell for on the AH after the 5% cut, minus every reagent the queue uses - priced like the Missing list (Buy items from vendors, the amounts needed, the reagents it crafts).", 1, 1, 1, true)
+    GameTooltip:AddLine("Reagents already in your bags or bank count at what they'd cost to buy, so changes move Profit and Missing by the same amount unless you own some of what changed.", 1, 1, 1, true)
+    GameTooltip:AddLine("From reagents: what crafting the ticked reagents saves over buying them. Untick Craft reagents to see the profit without them.", 0.7, 0.7, 0.7, true)
+    GameTooltip:AddLine("|cffff6666*|r a reagent has no price, or the AH doesn't list enough of it. Not priced: queued items with no AH price (left out).", 0.7, 0.7, 0.7, true)
     GameTooltip:Show()
   end)
   profitHover:SetScript("OnLeave", GameTooltip_Hide)

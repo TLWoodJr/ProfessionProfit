@@ -3,6 +3,8 @@
 local ADDON, ns = ...
 local msg, log, idFromLink, nameFromLink, isModern, skilletShown = ns.msg, ns.log, ns.idFromLink, ns.nameFromLink, ns.isModern, ns.skilletShown
 local hostFrame, professionInfo, itemName = ns.hostFrame, ns.professionInfo, ns.itemName
+local db
+ns.onInit(function(saved) db = saved end)
 
 local MODERN_DIFFICULTY = { [0] = "optimal", [1] = "medium", [2] = "easy", [3] = "trivial" }
 
@@ -265,3 +267,57 @@ local function logEnvironment(reason)
   if recipes[1] then log("first parsed recipe:", recipes[1]) end
 end
 ns.logEnvironment = logEnvironment
+
+-- /pp dump: everything the game reports for every recipe ID of the open
+-- profession, learned or not, saved to ProfessionProfitDB.recipeDump[profession]
+-- (on disk after /reload) - to see what the client knows about unlearned
+-- recipes before building on it. Counts go to chat.
+local function dumpRecipes()
+  if not isModern() then msg("/pp dump needs the Professions (K) window.") return end
+  local ok, ids = pcall(C_TradeSkillUI.GetAllRecipeIDs)
+  if not ok or type(ids) ~= "table" or #ids == 0 then
+    msg("Open a profession first (no recipe IDs).")
+    return
+  end
+  local prof = professionInfo(true) or "?"
+  local dump = { time = time(), profession = prof, recipes = {} }
+  local learned, unlearned, withSchematic, withOutput, lines = 0, 0, 0, 0, {}
+  for _, id in ipairs(ids) do
+    local info = C_TradeSkillUI.GetRecipeInfo(id)
+    local okLine, lineID, lineName, parentID, parentName = pcall(C_TradeSkillUI.GetTradeSkillLineForRecipe or error, id)
+    local okS, schematic = pcall(C_TradeSkillUI.GetRecipeSchematic, id, false)
+    local row = {
+      name = info and info.name, learned = info and info.learned, categoryID = info and info.categoryID,
+      skillLine = okLine and lineName or nil, parentLine = okLine and parentName or nil,
+      lineID = okLine and lineID or nil, parentLineID = okLine and parentID or nil,
+      difficulty = info and info.relativeDifficulty, maxTrivial = info and info.maxTrivialLevel,
+      enchant = info and info.isEnchantingRecipe or nil, gathering = info and info.isGatheringRecipe or nil,
+      dummy = info and info.isDummyRecipe or nil,
+    }
+    if okS and type(schematic) == "table" then
+      withSchematic = withSchematic + 1
+      row.output, row.made, row.madeMax = schematic.outputItemID, schematic.quantityMin, schematic.quantityMax
+      if row.output then withOutput = withOutput + 1 end
+      row.reagents = {}
+      for _, slot in ipairs(schematic.reagentSlotSchematics or {}) do
+        local first = slot.reagents and slot.reagents[1]
+        if first and first.itemID then row.reagents[#row.reagents + 1] = { first.itemID, slot.quantityRequired or 1, slot.reagentType } end
+      end
+    end
+    if row.learned then learned = learned + 1 else unlearned = unlearned + 1 end
+    local key = (row.parentLine or "?") .. " / " .. (row.skillLine or "?")
+    lines[key] = (lines[key] or 0) + 1
+    dump.recipes[id] = row
+  end
+  db.recipeDump = db.recipeDump or {}
+  db.recipeDump[prof] = dump
+  local parts = {}
+  for key, n in pairs(lines) do parts[#parts + 1] = key .. ": " .. n end
+  table.sort(parts)
+  msg(("Dumped %d recipe IDs for %s: %d learned, %d unlearned, %d with reagents, %d with a crafted item.")
+    :format(#ids, prof, learned, unlearned, withSchematic, withOutput))
+  msg("By skill line: " .. table.concat(parts, ", "))
+  msg("Saved to disk on /reload (ProfessionProfitDB.recipeDump). Open each profession and /pp dump again to add it.")
+  log("recipe dump", prof, #ids, "ids", learned, "learned", unlearned, "unlearned", table.concat(parts, ", "))
+end
+ns.dumpRecipes = dumpRecipes

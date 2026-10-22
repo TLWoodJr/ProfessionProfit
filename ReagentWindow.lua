@@ -71,6 +71,17 @@ local function applyChoiceToQueue(entry)
   end
 end
 
+-- Pricing for the window's numbers: Buy items from vendors as ticked here,
+-- which reaches the queue only on Update (popup.vendorPending: the
+-- unapplied db.noVendor, or nil).
+local function popupNoVendor()
+  if popup.vendorPending ~= nil then return popup.vendorPending end
+  return db.noVendor and true or false
+end
+local function popupOpts()
+  return { noVendor = popupNoVendor() or nil }
+end
+
 local function popupCrafts()
   local n = tonumber(popup.qty:GetText()) or 1
   return math.max(1, math.min(n, 999))
@@ -142,7 +153,10 @@ local function updatePopup()
   for _, widget in ipairs(popup.qtyWidgets) do widget:SetShown(not batch) end
   popup.queueButton:SetShown(not batch)
   popup.backButton:SetShown(not batch)
-  popup.updateButton:SetEnabled(next(popup.changed) ~= nil)
+  for _, widget in ipairs(popup.vendorWidgets) do widget:SetShown(batch ~= nil) end
+  popup.updateButton:SetEnabled(next(popup.changed) ~= nil or popup.vendorPending ~= nil)
+  popup.vendorCheck:SetChecked(not popupNoVendor())
+  local opts = popupOpts()
   local rowsTop = layoutPopup(batch)
   -- mains offer every listed reagent recipe; on() says which are ticked.
   local mains, recipe, crafts = popup.mains, nil, nil
@@ -174,7 +188,7 @@ local function updatePopup()
   end
   local _, plan = planDerived(withSubs(mains, on))
   -- What all the ticked reagent crafts together do to the shopping list.
-  local saving = not batch and shoppingCost(mains, function(id) return not listed[id] end) - shoppingCost(mains, on) or 0
+  local saving = not batch and shoppingCost(mains, function(id) return not listed[id] end, opts) - shoppingCost(mains, on, opts) or 0
 
   local rows = popup.subRows
   for i, entry in ipairs(popup.subs) do
@@ -182,7 +196,7 @@ local function updatePopup()
     local d = active and plan[entry.sub.recipeID]
     local row = rows[i]
     if row then
-      local effect = craftEffect(mains, on, entry.sub.recipeID)
+      local effect = craftEffect(mains, on, entry.sub.recipeID, opts)
       row.entry, row.plan, row.active, row.effect = entry, d, active, effect
       row.queuedNow = queuedCount(entry.sub.recipeID)
       row.check:SetChecked(entry.include)
@@ -229,38 +243,21 @@ local function updatePopup()
 end
 ns.updatePopup = updatePopup
 
--- The queue window's profit line: the queued items' profit (as priced in
--- the Profit table, so the open profession's only, every reagent bought)
--- plus what the ticked reagent crafts do to the shopping list (listCost:
--- its cost as queued).
-local function queueProfitLine(listCost)
-  local queue = craftQueue()
-  if #queue == 0 then return "" end
-  local byProduct = liveByProduct()
-  local total, priced, unpriced, incomplete = 0, 0, 0, false
-  for _, main in ipairs(queue) do
-    local recipe = main.productID and byProduct[main.productID]
-    if recipe and recipe.recipeID == main.recipeID and recipe.profit then
-      total, priced = total + recipe.profit * main.count, priced + 1
-      incomplete = incomplete or recipe.incomplete
-    else
-      unpriced = unpriced + 1
-    end
-  end
-  local saving = db.skipReagentCrafts and 0 or (shoppingCost(queue, function() return false end) - listCost)
-  local text = "Profit: " .. (priced > 0 and API.Money(total + saving) or (GREY .. "unknown|r"))
-  if incomplete then text = text .. RED .. " *|r" end
-  if saving > 0 then
-    text = text .. ("  " .. GREEN .. "(+%s from reagents)|r"):format(API.Money(saving))
-  elseif saving < 0 then
-    text = text .. ("  " .. RED .. "(-%s from reagents)|r"):format(API.Money(-saving))
-  end
-  if unpriced > 0 then text = text .. GREY .. (" %d unpriced"):format(unpriced) .. "|r" end
-  return text
-end
-ns.queueProfitLine = queueProfitLine
-
 local showBatch -- defined below
+
+-- "Buy items from vendors" (applied by Update, or /pp vendor): the queue
+-- prices vendor-sold reagents at the vendor's price and buys them when you
+-- open that vendor; off, they come from the AH. Not the Profit table.
+local function setBuyFromVendors(on)
+  db.noVendor = not on or nil
+  if popup then popup.vendorPending = nil end
+  msg(on and "Buy items from vendors on: the queue buys vendor-sold reagents from vendors (when you open one)."
+    or "Buy items from vendors off: the queue prices vendor-sold reagents from the AH and puts them on the shopping list.")
+  if popup and popup.vendorCheck then popup.vendorCheck:SetChecked(on) end
+  if ns.updateQueueWindow then ns.updateQueueWindow() end
+  if on and MerchantFrame and MerchantFrame:IsShown() then ns.buyFromMerchant() end
+end
+ns.setBuyFromVendors = setBuyFromVendors
 
 -- Its own window, hung under the craft queue window (placed by
 -- placeReagentWindow) and shown with the Profit tab.
@@ -343,7 +340,7 @@ local function createPopup()
   popup.restockBox:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:AddLine("Restock to")
-    GameTooltip:AddLine("How many of this item you want to own. With Top up ticked, queueing tops it up to this instead of Qty. Blank or 0 removes it. All targets are listed in the Restocking window.", 1, 1, 1, true)
+    GameTooltip:AddLine("How many of this item you want to own. With Use Restock ticked, queueing restocks to this instead of Qty. Blank or 0 removes it. All targets are listed in the Restocking window.", 1, 1, 1, true)
     GameTooltip:AddLine("Left blank, queueing more than one here sets it to that amount.", 0.7, 0.7, 0.7, true)
     GameTooltip:Show()
   end)
@@ -415,6 +412,7 @@ local function createPopup()
   popup.updateButton:SetPoint("BOTTOMLEFT", 12, 12)
   popup.updateButton:SetText("Update")
   popup.updateButton:SetScript("OnClick", function()
+    if popup.vendorPending ~= nil then setBuyFromVendors(not popup.vendorPending) end
     for id, entry in pairs(popup.changed) do
       applyChoiceToQueue(entry)
       popup.changed[id] = nil
@@ -425,11 +423,35 @@ local function createPopup()
   popup.updateButton:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:AddLine("Update the queue")
-    GameTooltip:AddLine("Applies the reagents you've ticked or unticked to what's already queued: ticked ones get crafted, unticked ones go on the shopping list.", 1, 1, 1, true)
+    GameTooltip:AddLine("Applies the reagents you've ticked or unticked to what's already queued: ticked ones get crafted, unticked ones go on the shopping list. Also applies Buy items from vendors.", 1, 1, 1, true)
     GameTooltip:AddLine("Your ticks are remembered either way and used for anything you queue next.", 0.7, 0.7, 0.7, true)
     GameTooltip:Show()
   end)
   popup.updateButton:SetScript("OnLeave", GameTooltip_Hide)
+
+  local vendorLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  vendorLabel:SetPoint("BOTTOMRIGHT", -14, 17)
+  vendorLabel:SetText("Buy items from vendors")
+  popup.vendorCheck = CreateFrame("CheckButton", nil, popup, "UICheckButtonTemplate")
+  popup.vendorCheck:SetSize(20, 20)
+  popup.vendorCheck:SetPoint("RIGHT", vendorLabel, "LEFT", -2, 0)
+  popup.vendorCheck:SetChecked(not db.noVendor)
+  -- Previewed here; the queue changes on Update.
+  popup.vendorCheck:SetScript("OnClick", function(self)
+    local noVendor = not self:GetChecked()
+    if noVendor == (db.noVendor and true or false) then popup.vendorPending = nil else popup.vendorPending = noVendor end
+    updatePopup()
+  end)
+  popup.vendorCheck:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Buy items from vendors")
+    GameTooltip:AddLine("Ticked: the queue buys reagents a vendor sells from the vendor - at its price, left off the AH shopping list, and bought for you (after you confirm) when you open that vendor.", 1, 1, 1, true)
+    GameTooltip:AddLine("Unticked: the queue prices them from the AH and puts them on the shopping list like everything else.", 1, 1, 1, true)
+    GameTooltip:AddLine("Previewed in this window; press Update to apply it to the queue. The Profit table always uses vendor prices. Also /pp vendor (applies at once).", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end)
+  popup.vendorCheck:SetScript("OnLeave", GameTooltip_Hide)
+  popup.vendorWidgets = { vendorLabel, popup.vendorCheck } -- the reagent list only
 
   popup.queueButton:SetScript("OnClick", function()
     local recipe, crafts = popup.recipe, popupCrafts()
@@ -449,7 +471,7 @@ local function createPopup()
 end
 ns.createPopup = createPopup
 
--- What "Queue profitable" queues: every recipe shown in the table with a
+-- What "Add to Queue" queues: every recipe shown in the table with a
 -- positive, complete profit, Qty / restock-target crafts each.
 local function profitableSteps()
   local steps, skippedIncomplete, skippedStock = {}, 0, 0
@@ -491,7 +513,7 @@ showBatch = function()
   end
   local merged, mains = mergeTrees(steps, byProduct)
   for _, main in ipairs(others) do mains[#mains + 1] = main end
-  recommend(merged, mains)
+  recommend(merged, mains, popupOpts())
   for _, entry in ipairs(merged) do
     local id = entry.sub.recipeID
     entry.ruleInclude = entry.include
