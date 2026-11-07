@@ -288,6 +288,9 @@ end
 local function createQueueWindow()
   queueWin = CreateFrame("Frame", "ProfessionProfitQueueWindow", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
   ns.queueWin = queueWin
+  -- Hidden before any scripts are set: a new frame starts shown, so hiding it
+  -- later would run OnHide, which hides the reagent window that + just opened.
+  queueWin:Hide()
   queueWin:SetSize(330, 206 + QROWS * QROW)
   queueWin:SetFrameStrata("HIGH")
   queueWin:SetClampedToScreen(true)
@@ -503,7 +506,6 @@ local function createQueueWindow()
     showReagentWindow()
   end)
   queueWin:SetScript("OnHide", function() if ns.popup then ns.popup:Hide() end end)
-  queueWin:Hide()
 end
 
 -- Opened only by the Queue tab or queueing something, and only closed by you

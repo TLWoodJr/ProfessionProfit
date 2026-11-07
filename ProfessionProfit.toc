@@ -1,5 +1,6 @@
 ## Interface: 16001
 ## Title: ProfessionProfit
+## IconTexture: Interface\Icons\INV_Misc_Coin_02
 ## Notes: Profit table tab on the profession window. Prices every learned recipe from the AH while the auction house is open.
 ## Author: magnumwood
 ## Version: @project-version@

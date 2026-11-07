@@ -466,6 +466,28 @@ local function craftEffect(mains, on, id, opts)
 end
 ns.craftEffect = craftEffect
 
+-- What crafting `units` of a reagent gains over buying them: the cost of
+-- buying that many, minus the cost of buying its reagents for the crafts
+-- that make them. Everything at AH value, whatever you already own.
+-- Returns { units, buy, craft, gain } - buy / craft / gain nil when unpriced.
+local function craftGain(recipe, units, opts)
+  opts = opts or priceOpts()
+  local result = { units = units }
+  if units <= 0 then return result end
+  local crafts = math.ceil(units / (recipe.made or 1))
+  result.buy = API.BuyCost(recipe.productID, units, opts)
+  local craft = 0
+  for _, reagent in ipairs(recipe.reagents) do
+    local total = reagent.id and API.BuyCost(reagent.id, reagent.count * crafts, opts)
+    if not total then craft = nil break end
+    craft = craft + total
+  end
+  result.craft = craft
+  if result.buy and craft then result.gain = result.buy - craft end
+  return result
+end
+ns.craftGain = craftGain
+
 -- The queue's profit, priced like its shopping list (Buy items from
 -- vendors, order books at the real amounts, the reagents it crafts): the
 -- queued items' AH value after the cut, minus every reagent the queue uses

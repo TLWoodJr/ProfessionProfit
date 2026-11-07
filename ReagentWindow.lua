@@ -5,7 +5,7 @@ local API, RED, GREY, GREEN, msg, log = ns.API, ns.RED, ns.GREY, ns.GREEN, ns.ms
 local hostShown, evaluate, readRecipes, craftQueue, queuedCount, queueTarget = ns.hostShown, ns.evaluate, ns.readRecipes, ns.craftQueue, ns.queuedCount, ns.queueTarget
 local setQueueTarget, craftsToQueue, recipeDef, planDerived, dropSub, subTree = ns.setQueueTarget, ns.craftsToQueue, ns.recipeDef, ns.planDerived, ns.dropSub, ns.subTree
 local effectivelyIncluded, chosenSubs, queueOrdered, refresh = ns.effectivelyIncluded, ns.chosenSubs, ns.queueOrdered, ns.refresh
-local applyChoices, mergeTrees, recommend, craftEffect, shoppingCost, withSubs = ns.applyChoices, ns.mergeTrees, ns.recommend, ns.craftEffect, ns.shoppingCost, ns.withSubs
+local applyChoices, mergeTrees, recommend, withSubs = ns.applyChoices, ns.mergeTrees, ns.recommend, ns.withSubs
 local db
 ns.onInit(function(saved) db = saved end)
 
@@ -87,19 +87,19 @@ local function popupCrafts()
   return math.max(1, math.min(n, 999))
 end
 
--- One line per reagent: name, what crafting it does to the shopping list,
--- crafts to queue. Hover for the numbers.
-local function reagentVerdict(effect)
-  if effect.unknown then return RED .. "cost unknown|r" end
-  if effect.short then return RED .. "not enough on AH|r" end
-  if effect.needed then return GREEN .. "not on AH|r" end
-  if effect.saving > 0 then return GREEN .. "saves " .. API.Money(effect.saving) .. "|r" end
-  if effect.saving < 0 then return RED .. "loses " .. API.Money(-effect.saving) .. "|r" end
-  return GREY .. "no change|r"
+-- One line per reagent: name, what crafting the ones still needed gains over
+-- buying them, crafts to queue. Hover for the numbers.
+local function reagentVerdict(g)
+  if g.units <= 0 then return GREY .. "none needed|r" end
+  if not g.craft then return RED .. "cost unknown|r" end
+  if not g.buy then return GREEN .. "not on AH|r" end
+  if g.gain > 0 then return GREEN .. "saves " .. API.Money(g.gain) .. "|r" end
+  if g.gain < 0 then return RED .. "loses " .. API.Money(-g.gain) .. "|r" end
+  return GREY .. "same cost|r"
 end
 
 local function reagentRowTooltip(row)
-  local entry, d, effect = row.entry, row.plan, row.effect
+  local entry, d, g = row.entry, row.plan, row.gain
   if not entry then return end
   GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
   GameTooltip:AddLine(entry.reagent.name or "?")
@@ -110,16 +110,13 @@ local function reagentRowTooltip(row)
   if row.queuedNow and row.queuedNow > 0 then
     GameTooltip:AddDoubleLine("Already queued", row.queuedNow, 0.8, 0.8, 0.8, 1, 1, 1)
   end
-  if effect then
-    GameTooltip:AddDoubleLine("Shopping list if crafted", API.Money(effect.craft), 0.8, 0.8, 0.8, 1, 1, 1)
-    GameTooltip:AddDoubleLine("Shopping list if bought", API.Money(effect.buy), 0.8, 0.8, 0.8, 1, 1, 1)
-    if effect.short then GameTooltip:AddLine("Crafting it needs more of a reagent than the AH lists.", 1, 0.4, 0.4, true) end
-    if effect.unknown then GameTooltip:AddLine("Crafting it needs a reagent with no price.", 1, 0.4, 0.4, true) end
-    if effect.needed then GameTooltip:AddLine("It has no current AH price, so crafting is the way to get it.", 0.6, 0.6, 0.6, true) end
+  if g and g.units > 0 then
+    local unknown = RED .. "unknown|r"
+    GameTooltip:AddDoubleLine(("Buy %d"):format(g.units), g.buy and API.Money(g.buy) or unknown, 0.8, 0.8, 0.8, 1, 1, 1)
+    GameTooltip:AddDoubleLine(("Reagents to craft %d"):format(g.units), g.craft and API.Money(g.craft) or unknown, 0.8, 0.8, 0.8, 1, 1, 1)
+    if g.gain then GameTooltip:AddDoubleLine("Crafting gains", API.Money(g.gain), 0.8, 0.8, 0.8, 1, 1, 1) end
   end
-  if entry.unitCraft then GameTooltip:AddDoubleLine("Craft cost (one)", API.Money(entry.unitCraft) .. " ea", 0.6, 0.6, 0.6, 0.8, 0.8, 0.8) end
-  if entry.canBuy then GameTooltip:AddDoubleLine("Buy price (one)", API.Money(entry.buy) .. " ea", 0.6, 0.6, 0.6, 0.8, 0.8, 0.8) end
-  GameTooltip:AddLine("Shopping list costs count every reagent of the queue at the amount needed, from the order book.", 0.6, 0.6, 0.6, true)
+  GameTooltip:AddLine("Priced at AH value, including what you already own.", 0.6, 0.6, 0.6, true)
   if entry.include ~= entry.ruleInclude then
     GameTooltip:AddLine("Your choice (remembered) - the rule would " .. (entry.ruleInclude and "craft" or "buy") .. " it.", 0.6, 0.6, 0.6, true)
   end
@@ -187,17 +184,20 @@ local function updatePopup()
     return true -- another profession's reagent crafts in the queue stay as they are
   end
   local _, plan = planDerived(withSubs(mains, on))
-  -- What all the ticked reagent crafts together do to the shopping list.
-  local saving = not batch and shoppingCost(mains, function(id) return not listed[id] end, opts) - shoppingCost(mains, on, opts) or 0
+  -- How many of each reagent would be crafted if it were ticked, for its gain.
+  local _, fullPlan = planDerived(withSubs(mains, function() return true end))
+  local saving = 0 -- the ticked reagents' gains together
 
   local rows = popup.subRows
   for i, entry in ipairs(popup.subs) do
     local active = effectivelyIncluded(popup.subs, i)
     local d = active and plan[entry.sub.recipeID]
+    local full = d or fullPlan[entry.sub.recipeID]
+    local g = ns.craftGain(entry.sub, full and full.count * full.made or 0, opts)
+    if d and g.gain then saving = saving + g.gain end
     local row = rows[i]
     if row then
-      local effect = craftEffect(mains, on, entry.sub.recipeID, opts)
-      row.entry, row.plan, row.active, row.effect = entry, d, active, effect
+      row.entry, row.plan, row.active, row.gain = entry, d, active, g
       row.queuedNow = queuedCount(entry.sub.recipeID)
       row.check:SetChecked(entry.include)
       row.check:ClearAllPoints()
@@ -205,7 +205,7 @@ local function updatePopup()
       local name = (entry.depth > 1 and (GREY .. ">|r ") or "") .. (entry.reagent.name or "?")
       if entry.include and not active then name = GREY .. (entry.reagent.name or "?") .. "|r" end
       row.left:SetText(name)
-      row.right:SetText(reagentVerdict(effect))
+      row.right:SetText(reagentVerdict(g))
       row.count:SetText(d and d.count > 0 and ("x%d"):format(d.count) or (GREY .. "-|r"))
       row:Show()
     end
