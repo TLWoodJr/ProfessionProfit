@@ -2,4 +2,6 @@
   <Binding name="PROFESSIONPROFIT_CRAFTNEXT" header="PROFESSIONPROFIT" category="ADDONS">
     ProfessionProfit_CraftNext()
   </Binding>
+  <Binding name="CLICK ProfessionProfitDisenchantButton:LeftButton" header="PROFESSIONPROFIT" category="ADDONS">
+  </Binding>
 </Bindings>

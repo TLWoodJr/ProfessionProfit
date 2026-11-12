@@ -6,14 +6,41 @@ local expandAll, readRecipes = ns.expandAll, ns.readRecipes
 local db
 ns.onInit(function(saved) db = saved end)
 
--- Every crafted item and reagent to search for: { id, name }.
+-- Every crafted item, reagent and material the crafted items disenchant
+-- into (for the Shuffle column) to search for: { id, name }.
 local function scanItems(recipes)
-  local items = {}
+  local items, mats = {}, {}
   for _, recipe in ipairs(recipes) do
-    if recipe.productID then items[#items + 1] = { id = recipe.productID, name = recipe.productName } end
+    if recipe.productID then
+      items[#items + 1] = { id = recipe.productID, name = recipe.productName }
+      for _, y in ipairs(API.DisenchantYields(recipe.productID) or {}) do
+        if y.chance > 0 and not mats[y.id] then
+          mats[y.id] = true
+          items[#items + 1] = { id = y.id, name = ns.itemName(y.id) or API.DE_MATS[y.id] }
+        end
+      end
+    end
     for _, reagent in ipairs(recipe.reagents) do
       if reagent.id then items[#items + 1] = { id = reagent.id, name = reagent.name } end
     end
+  end
+  -- Reagents your other professions or characters can craft: their reagents
+  -- too (any depth), to price crafting them.
+  local known, seen, done = ns.withKnown({}), {}, {}
+  for _, item in ipairs(items) do seen[item.id] = true end
+  local i = 1
+  while i <= #items do
+    local sub = known[items[i].id]
+    if sub and not done[sub.recipeID] then
+      done[sub.recipeID] = true
+      for _, reagent in ipairs(sub.reagents) do
+        if not seen[reagent.id] then
+          seen[reagent.id] = true
+          items[#items + 1] = { id = reagent.id, name = reagent.name or ns.itemName(reagent.id) }
+        end
+      end
+    end
+    i = i + 1
   end
   return items
 end

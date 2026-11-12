@@ -53,6 +53,8 @@ local function readModernRecipes()
       list[#list + 1] = recipe
     end
   end
+  -- Saved for planning reagent crafts from other professions and characters.
+  if ns.recordKnown then ns.recordKnown(list, professionInfo(true)) end
   return list
 end
 

@@ -169,7 +169,8 @@ ns.onCraftStopped = onCraftStopped
 
 -- One cast finished: count it off the queue. Reagent crafts need no
 -- bookkeeping - the new items in your bags lower their count by themselves.
--- Returns "queued" for a queued item, "reagent" for a reagent craft.
+-- Returns "queued" for a queued item ("disenchant" when it's queued to be
+-- disenchanted), "reagent" for a reagent craft.
 local function onCraftSucceeded(spellID)
   local isReagentCraft, stepDone, counted
   if ns.crafting and ns.crafting.recipeID == spellID then
@@ -192,7 +193,7 @@ local function onCraftSucceeded(spellID)
         entry.count = entry.count - 1
         if entry.count <= 0 then table.remove(queue, index) end
         log("crafted", entry.name, "left", math.max(entry.count, 0))
-        counted = "queued"
+        counted = entry.de and "disenchant" or "queued"
         break
       end
     end
@@ -221,6 +222,7 @@ local function recompileQueue()
     if recipe.productID then byProduct[recipe.productID] = recipe end
     if recipe.recipeID then byID[recipe.recipeID] = recipe end
   end
+  byProduct = ns.withKnown(byProduct)
   local crafting, buying, done, other = {}, {}, 0, {}
   local steps, others = {}, {}
   for _, main in ipairs(craftQueue()) do

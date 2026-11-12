@@ -22,6 +22,7 @@
 
 Core.lua
 Recipes.lua
+Known.lua
 Queue.lua
 Scan.lua
 ProfitTable.lua
@@ -31,4 +32,7 @@ QueueWindow.lua
 Restock.lua
 Tabs.lua
 Toast.lua
+Disenchant.lua
+DisenchantScan.lua
+DisenchantBuy.lua
 Events.lua

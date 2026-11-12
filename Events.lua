@@ -162,10 +162,17 @@ SlashCmdList.PROFESSIONPROFIT = function(input)
     elseif arg == "mail" then
       db.mailToastOff = not db.mailToastOff or nil
       msg("mail gold pop-up " .. (db.mailToastOff and "off." or "on."))
+    elseif arg == "de" then
+      db.deToastOff = not db.deToastOff or nil
+      msg("disenchant profit pop-up " .. (db.deToastOff and "off." or "on."))
     else
       db.craftToastOff = not db.craftToastOff or nil
       msg("craft profit pop-up " .. (db.craftToastOff and "off." or "on."))
     end
+  elseif cmd == "descan" then
+    ns.startDisenchantScan()
+  elseif cmd == "planner" then
+    ns.toggleDisenchantPlanner()
   elseif cmd == "dump" then
     ns.dumpRecipes()
   elseif cmd == "debug" then
@@ -186,6 +193,9 @@ SlashCmdList.PROFESSIONPROFIT = function(input)
     print("  /pp vendor - turn Buy items from vendors on/off")
     print("  /pp toast - turn the craft profit pop-up on/off (/pp toast test to preview)")
     print("  /pp toast mail - turn the mail gold pop-up on/off")
+    print("  /pp toast de - turn the disenchant profit pop-up on/off")
+    print("  /pp descan - scan the AH for gear worth more disenchanted than its buyout")
+    print("  /pp planner - show or hide the Disenchant planner")
     print("  /pp debug - show diagnostics if the Profit tab is missing")
   end
 end

@@ -34,14 +34,15 @@ end
 -- it's open, else read here (cached for a second on the reagent window).
 local function liveByProduct()
   if ns.panel and ns.panel:IsVisible() and ns.panel.byProduct then return ns.panel.byProduct end
-  if not hostShown() then return {} end
+  if not hostShown() then return ns.withKnown({}) end
   local cache = popup and popup.live
   if not cache or GetTime() - cache.t > 1 then
-    cache = { t = GetTime(), map = {} }
+    local live = {}
     for _, recipe in ipairs(readRecipes()) do
       evaluate(recipe)
-      if recipe.productID then cache.map[recipe.productID] = recipe end
+      if recipe.productID then live[recipe.productID] = recipe end
     end
+    cache = { t = GetTime(), map = ns.withKnown(live) }
     if popup then popup.live = cache end
   end
   return cache.map
@@ -204,6 +205,8 @@ local function updatePopup()
       row.check:SetPoint("LEFT", (entry.depth - 1) * 12, 0)
       local name = (entry.depth > 1 and (GREY .. ">|r ") or "") .. (entry.reagent.name or "?")
       if entry.include and not active then name = GREY .. (entry.reagent.name or "?") .. "|r" end
+      local where = entry.sub.prof and ns.crafterLabel(entry.sub)
+      if where then name = name .. GREY .. " (" .. where .. ")|r" end
       row.left:SetText(name)
       row.right:SetText(reagentVerdict(g))
       row.count:SetText(d and d.count > 0 and ("x%d"):format(d.count) or (GREY .. "-|r"))
@@ -221,9 +224,14 @@ local function updatePopup()
     or "Reagents to craft (ticked):")
     .. (more > 0 and (GREY .. ("  +%d more (by the rule)|r"):format(more)) or ""))
 
+  local canDE = not batch and recipe.shuffleProfit ~= nil and ns.isEnchanter()
+  for _, widget in ipairs(popup.deWidgets) do widget:SetShown(canDE) end
   local text
   if batch then
     text = nil
+  elseif canDE and popup.deCheck:GetChecked() then
+    text = ("Disenchanted: %s ea, %s total"):format(API.Money(recipe.shuffleProfit), API.Money(recipe.shuffleProfit * crafts))
+    if recipe.shuffleIncomplete then text = text .. RED .. " *|r" end
   elseif recipe.profit then
     text = ("Profit: %s ea, %s total"):format(API.Money(recipe.profit), API.Money(recipe.profit * crafts))
     if recipe.incomplete then text = text .. RED .. " *|r" end
@@ -353,6 +361,25 @@ local function createPopup()
   popup.inQueue = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   popup.inQueue:SetJustifyH("LEFT")
   popup.inQueue:SetWordWrap(false)
+
+  -- Disenchant what it makes (enchanters, disenchantable items): queues it
+  -- for the Disenchant button and prices it by its materials.
+  local deLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  deLabel:SetPoint("TOPRIGHT", -16, -58)
+  deLabel:SetText("Disenchant")
+  popup.deCheck = CreateFrame("CheckButton", nil, popup, "UICheckButtonTemplate")
+  popup.deCheck:SetSize(20, 20)
+  popup.deCheck:SetPoint("RIGHT", deLabel, "LEFT", -2, 0)
+  popup.deCheck:SetScript("OnClick", function() updatePopup() end)
+  popup.deCheck:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Disenchant")
+    GameTooltip:AddLine("Queues what these crafts make for disenchanting too: the Disenchant button on the Profit tab disenchants them, and each one's realized profit is counted against the projection.", 1, 1, 1, true)
+    GameTooltip:AddLine("Profit then means the materials' AH value after the 5% cut, minus the craft cost.", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end)
+  popup.deCheck:SetScript("OnLeave", GameTooltip_Hide)
+  popup.deWidgets = { deLabel, popup.deCheck }
   popup.profit = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   popup.profit:SetJustifyH("LEFT")
   popup.profit:SetWordWrap(false)
@@ -455,14 +482,17 @@ local function createPopup()
 
   popup.queueButton:SetScript("OnClick", function()
     local recipe, crafts = popup.recipe, popupCrafts()
-    -- Queueing more than one with no target set remembers that amount.
-    if crafts > 1 and not queueTarget(recipe) and recipe.productID then
+    local de = popup.deCheck:IsShown() and popup.deCheck:GetChecked()
+    -- Queueing more than one with no target set remembers that amount (not
+    -- for disenchanting: you won't keep them).
+    if crafts > 1 and not de and not queueTarget(recipe) and recipe.productID then
       setQueueTarget(recipe, crafts * recipe.made)
       msg(("Restock target for %s set to %d (change it in Restocking)."):format(recipe.name, crafts * recipe.made))
       ns.toggleTargetsWindow(true)
     end
-    local done, failed = queueOrdered({ { recipe = recipe, crafts = crafts, subs = chosenSubs(popup.subs) } })
-    if #done > 0 then msg("Queued: " .. table.concat(done, ", ")) end
+    local done, failed = queueOrdered({ { recipe = recipe, crafts = crafts, subs = chosenSubs(popup.subs), de = de } })
+    if de and #done > 0 then ns.queueDisenchant(recipe, crafts * recipe.made) end
+    if #done > 0 then msg("Queued: " .. table.concat(done, ", ") .. (de and " - to disenchant" or "")) end
     if #failed > 0 then msg("Not queued: " .. table.concat(failed, ", ")) end
     popup.recipe = nil
     showBatch() -- back to the queue's reagents
@@ -539,6 +569,8 @@ local function openQueuePopup(recipe)
   local flat, mains = mergeTrees({ { recipe = recipe, crafts = math.max(1, craftsToQueue(recipe)) } })
   popup.subs = applyChoices(recommend(flat, mains))
   popup.qty:SetText(tostring(math.max(1, craftsToQueue(recipe))))
+  -- Ticked when disenchanting pays better than selling.
+  popup.deCheck:SetChecked(recipe.shuffleProfit ~= nil and (not recipe.profit or recipe.shuffleProfit > recipe.profit))
   popup:Show()
   updatePopup()
   log("queue popup", recipe.name, #popup.subs, "craftable reagents")

@@ -102,6 +102,7 @@ end
 -- Is this queue entry a recipe of the open profession? Fills in a missing
 -- profession name while at it.
 local function inOpenProfession(entry)
+  if entry.crafter and entry.crafter ~= charKey() then return false end -- another character crafts it
   if not openRecipeIDs()[entry.recipeID] then return false end
   if not entry.prof then entry.prof = professionForRecipe(entry.recipeID) end
   return true
@@ -115,8 +116,8 @@ local function recipeDef(recipe)
   end
   return {
     recipeID = recipe.recipeID, name = recipe.name,
-    prof = professionForRecipe(recipe.recipeID) or professionInfo(true) or professionName(),
-    productID = recipe.productID, made = recipe.made, reagents = reagents,
+    prof = recipe.prof or professionForRecipe(recipe.recipeID) or professionInfo(true) or professionName(),
+    crafter = recipe.crafter, productID = recipe.productID, made = recipe.made, reagents = reagents,
   }
 end
 ns.recipeDef = recipeDef
@@ -124,7 +125,8 @@ ns.recipeDef = recipeDef
 -- Add crafts of a recipe (merged into an existing entry for that recipe).
 -- subs: recipes of craftable reagents to craft instead of buy. Their crafts
 -- aren't stored - computeQueue() works them out from what's in your bags.
-local function queueAdd(recipe, crafts, subs)
+-- de: what it makes is to be disenchanted (the entry is priced by that).
+local function queueAdd(recipe, crafts, subs, de)
   if not recipe.recipeID then return false, "only supported with the Professions (K) window" end
   if not crafts or crafts <= 0 then return false, "nothing to queue" end
   local queue = craftQueue()
@@ -139,6 +141,7 @@ local function queueAdd(recipe, crafts, subs)
     entry.count = crafts
     queue[#queue + 1] = entry
   end
+  if de then entry.de = true end
   entry.subs = entry.subs or {}
   for _, sub in ipairs(subs or {}) do
     if sub.recipeID and sub.productID then entry.subs[sub.recipeID] = recipeDef(sub) end
@@ -212,7 +215,7 @@ local function planDerived(mains)
   for _, productID in ipairs(order) do
     local def = chosen[productID]
     local d = {
-      recipeID = def.recipeID, name = def.name, prof = def.prof, productID = productID, made = def.made or 1,
+      recipeID = def.recipeID, name = def.name, prof = def.prof, crafter = def.crafter, productID = productID, made = def.made or 1,
       reagents = def.reagents, auto = true, depth = depth[productID],
       need = need[productID] or 0, have = bagCount(productID), usedBy = usedBy[productID] or {},
     }
@@ -337,12 +340,11 @@ local function chosenSubs(flat)
 end
 ns.chosenSubs = chosenSubs
 
--- Queue a list of {recipe, crafts}, sub-reagents first.
--- Queue a list of {recipe, crafts, subs}.
+-- Queue a list of {recipe, crafts, subs, de}.
 local function queueOrdered(steps)
   local done, failed = {}, {}
   for _, step in ipairs(steps) do
-    local ok, reason = queueAdd(step.recipe, step.crafts, step.subs)
+    local ok, reason = queueAdd(step.recipe, step.crafts, step.subs, step.de)
     if ok then
       local text = step.crafts .. " x " .. step.recipe.name
       if step.subs and #step.subs > 0 then
@@ -490,7 +492,8 @@ ns.craftGain = craftGain
 
 -- The queue's profit, priced like its shopping list (Buy items from
 -- vendors, order books at the real amounts, the reagents it crafts): the
--- queued items' AH value after the cut, minus every reagent the queue uses
+-- queued items' AH value after the cut (for items queued to disenchant,
+-- what disenchanting them gives), minus every reagent the queue uses
 -- (what's already in your bags and bank too, at what it would cost to buy).
 -- Returns profit, saving (what the reagent crafts save over buying those
 -- reagents; 0 with Craft reagents off), unsold (queued items with no AH
@@ -498,9 +501,17 @@ ns.craftGain = craftGain
 local function queueProfit()
   local queue = craftQueue()
   local _, cost, unpriced, short = shoppingFor((computeQueue()), nil, true)
-  local sales, unsold = 0, 0
+  local sales, unsold, deMissing = 0, 0, false
   for _, main in ipairs(queue) do
-    local sell = main.productID and API.SellPrice(main.productID)
+    -- Queued to disenchant: what disenchanting it gives instead.
+    local sell
+    if main.de then
+      local missing
+      if main.productID then sell, missing = API.DisenchantValue(main.productID) end
+      if sell and missing > 0 then deMissing = true end
+    else
+      sell = main.productID and API.SellPrice(main.productID)
+    end
     if sell then
       sales = sales + sell * (main.made or 1) * main.count * (1 - API.AH_CUT)
     else
@@ -509,7 +520,7 @@ local function queueProfit()
   end
   local saving = 0
   if not db.skipReagentCrafts then saving = shoppingCost(queue, function() return false end, nil, true) - cost end
-  return math.floor(sales - cost), saving, unsold, unpriced > 0 or short > 0
+  return math.floor(sales - cost), saving, unsold, unpriced > 0 or short > 0 or deMissing
 end
 ns.queueProfit = queueProfit
 

@@ -90,9 +90,24 @@ local function makeShoppingList()
   if #searches == 0 and #bankItems > 0 then msg("Nothing to buy - the rest is in your bank.") end
 end
 
+-- A disenchant queue row: { deEntry = the queued item }.
+local function disenchantRowTooltip(row, e)
+  GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+  GameTooltip:AddLine("Disenchant " .. (e.name or "?"), 1, 1, 1)
+  GameTooltip:AddDoubleLine("Queued", e.count, 0.8, 0.8, 0.8, 1, 1, 1)
+  GameTooltip:AddDoubleLine("In bags", bagCount(e.itemID), 0.8, 0.8, 0.8, 1, 1, 1)
+  GameTooltip:AddDoubleLine("Craft cost", API.Money(math.floor(e.cost)) .. " ea", 0.8, 0.8, 0.8, 1, 1, 1)
+  GameTooltip:AddDoubleLine("Projected profit", API.Money(math.floor(e.projected)) .. " ea, "
+    .. API.Money(math.floor(e.projected * e.count)) .. " total", 0.8, 0.8, 0.8, 1, 1, 1)
+  GameTooltip:AddLine("Expected materials at AH prices after the 5% cut, minus the craft cost - as when you queued it.", 0.6, 0.6, 0.6, true)
+  GameTooltip:AddLine("The Disenchant button on the Profit tab disenchants them. - / + change the count, x removes it.", 0.6, 0.6, 0.6, true)
+  GameTooltip:Show()
+end
+
 local function queueRowTooltip(row)
   local entry = row.entry
   if not entry then return end
+  if entry.deEntry then return disenchantRowTooltip(row, entry.deEntry) end
   GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
   GameTooltip:AddLine(entry.name, 1, 1, 1)
   GameTooltip:AddDoubleLine("Queued", entry.count .. " craft(s)", 0.8, 0.8, 0.8, 1, 1, 1)
@@ -103,6 +118,10 @@ local function queueRowTooltip(row)
     GameTooltip:AddLine("To buy it instead, untick it in the reagent window and press Update.", 0.6, 0.6, 0.6, true)
   end
   GameTooltip:AddDoubleLine("Profession", entry.prof or "?", 0.8, 0.8, 0.8, 1, 1, 1)
+  if entry.crafter then
+    GameTooltip:AddDoubleLine("Crafted by", ns.crafterName(entry.crafter), 0.8, 0.8, 0.8, 1, 1, 1)
+    GameTooltip:AddLine("Craft it on that character and mail it here. Its reagents are on this shopping list.", 0.6, 0.6, 0.6, true)
+  end
   if inOpenProfession(entry) then
     GameTooltip:AddDoubleLine("Can craft now", craftableNow(entry), 0.8, 0.8, 0.8, 1, 1, 1)
   end
@@ -136,6 +155,7 @@ local function createQueueRow(parent, i)
     return b
   end
   local function change(entry, delta)
+    if entry.deEntry then return ns.changeDisenchant(entry.deEntry, delta) end
     entry.count = entry.count + delta
     if entry.count <= 0 then
       for index, e in ipairs(craftQueue()) do if e == entry then table.remove(craftQueue(), index) break end end
@@ -178,9 +198,15 @@ updateQueueWindow = function()
   if tabs and tabs[3] then tabs[3]:SetText(("Queue (%d)"):format(#queue)) end
   if not queueWin or not queueWin:IsShown() then return end
   queueWin.title:SetText(("Craft Queue (%d)"):format(#queue))
-  local prof = professionInfo(true)
-  queueWin.content:SetHeight(math.max(#queue * QROW, 1))
-  for i, entry in ipairs(queue) do
+  -- Disenchanting follows the crafts.
+  local rows = {}
+  for _, entry in ipairs(queue) do rows[#rows + 1] = entry end
+  local deQueue = ns.deQueue()
+  for _, e in ipairs(deQueue) do
+    rows[#rows + 1] = { deEntry = e, name = "Disenchant " .. (e.name or "?"), count = e.count }
+  end
+  queueWin.content:SetHeight(math.max(#rows * QROW, 1))
+  for i, entry in ipairs(rows) do
     local row = queueWin.rows[i] or createQueueRow(queueWin.content, i)
     queueWin.rows[i] = row
     row.entry = entry
@@ -190,10 +216,18 @@ updateQueueWindow = function()
     row.minusButton:SetShown(not entry.auto)
     row.removeButton:SetShown(not entry.auto)
     local text = entry.auto and (("  "):rep(entry.depth or 1) .. entry.name .. " |cffa0a0a0(reagent)|r") or entry.name
-    local n = craftableNow(entry)
-    if not inOpenProfession(entry) then
+    local n = not entry.deEntry and craftableNow(entry) or 0
+    if entry.deEntry then
+      -- Green when they're all in your bags, yellow for some, red for none.
+      local have = bagCount(entry.deEntry.itemID)
+      if have >= entry.count then row.name:SetTextColor(0.25, 1, 0.25)
+      elseif have > 0 then
+        row.name:SetTextColor(1, 0.85, 0.2)
+        text = text .. (" |cffa0a0a0(%d in bags)|r"):format(have)
+      else row.name:SetTextColor(1, 0.4, 0.4) end
+    elseif not inOpenProfession(entry) then
       row.name:SetTextColor(0.55, 0.55, 0.55)
-      text = text .. " |cff808080(" .. (entry.prof or "other profession") .. ")|r"
+      text = text .. " |cff808080(" .. (ns.crafterLabel(entry) or "other profession") .. ")|r"
     elseif n >= entry.count then
       row.name:SetTextColor(0.25, 1, 0.25)
     elseif n > 0 then
@@ -206,11 +240,23 @@ updateQueueWindow = function()
     row.count:SetText("x" .. entry.count)
     row:Show()
   end
-  for i = #queue + 1, #queueWin.rows do
+  for i = #rows + 1, #queueWin.rows do
     queueWin.rows[i]:Hide()
     queueWin.rows[i].entry = nil
   end
-  queueWin.empty:SetShown(#queue == 0)
+  queueWin.empty:SetShown(#rows == 0)
+
+  -- Disenchanting: what's left (projected) and what's been done (realized
+  -- against its projection).
+  local run = ns.deRun()
+  local deParts = {}
+  local left, leftCount = ns.deProjectedLeft()
+  if leftCount > 0 then deParts[#deParts + 1] = ("%d left, projected %s"):format(leftCount, API.Money(left)) end
+  if run.casts > 0 then
+    deParts[#deParts + 1] = ("done %d: %s%s|r %s(projected %s)|r"):format(run.casts, run.realized >= 0 and GREEN .. "+" or RED,
+      API.Money(run.realized), GREY, API.Money(math.floor(run.projected)))
+  end
+  queueWin.deLine:SetText(#deParts > 0 and ("Disenchant: " .. table.concat(deParts, ", ")) or "")
 
   local missing, cost, unpriced = queueShopping()
   queueWin.missingList = missing
@@ -291,7 +337,7 @@ local function createQueueWindow()
   -- Hidden before any scripts are set: a new frame starts shown, so hiding it
   -- later would run OnHide, which hides the reagent window that + just opened.
   queueWin:Hide()
-  queueWin:SetSize(330, 206 + QROWS * QROW)
+  queueWin:SetSize(330, 222 + QROWS * QROW)
   queueWin:SetFrameStrata("HIGH")
   queueWin:SetClampedToScreen(true)
   queueWin:EnableMouse(true)
@@ -440,6 +486,31 @@ local function createQueueWindow()
   save:SetScript("OnLeave", GameTooltip_Hide)
   queueWin.saveButton = save
 
+  queueWin.deLine = queueWin:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  queueWin.deLine:SetPoint("BOTTOMLEFT", 14, 108)
+  queueWin.deLine:SetPoint("RIGHT", -12, 0)
+  queueWin.deLine:SetJustifyH("LEFT")
+  queueWin.deLine:SetWordWrap(false)
+  local deHover = CreateFrame("Frame", nil, queueWin)
+  deHover:SetAllPoints(queueWin.deLine)
+  deHover:EnableMouse(true)
+  deHover:SetScript("OnEnter", function(self)
+    local run = ns.deRun()
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine("Disenchanting")
+    local left, count = ns.deProjectedLeft()
+    GameTooltip:AddDoubleLine(("Still queued (%d)"):format(count), API.Money(left) .. " projected", 1, 1, 1, 1, 1, 1)
+    GameTooltip:AddDoubleLine(("Disenchanted (%d)"):format(run.casts), API.Money(run.realized) .. " realized", 1, 1, 1, 1, 1, 1)
+    GameTooltip:AddDoubleLine(" ", API.Money(math.floor(run.projected)) .. " projected", 1, 1, 1, 0.7, 0.7, 0.7)
+    if run.unpriced > 0 then
+      GameTooltip:AddLine(("%d disenchant(s) gave a material with no AH price (counted as nothing)."):format(run.unpriced), 1, 0.4, 0.4, true)
+    end
+    GameTooltip:AddLine("Projected: the expected materials at AH prices after the 5% cut, minus the craft cost, as when you queued it. Realized: the materials you actually got, at today's prices, minus the same cost.", 0.6, 0.6, 0.6, true)
+    GameTooltip:AddLine("Starts over when you queue disenchanting with nothing left in the disenchant queue.", 0.6, 0.6, 0.6, true)
+    GameTooltip:Show()
+  end)
+  deHover:SetScript("OnLeave", GameTooltip_Hide)
+
   queueWin.earned = queueWin:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   queueWin.earned:SetPoint("BOTTOMLEFT", 14, 92)
   queueWin.earned:SetPoint("RIGHT", -12, 0)
@@ -494,6 +565,8 @@ local function createQueueWindow()
   clear:SetScript("OnClick", function()
     if IsShiftKeyDown() then
       wipe(craftQueue())
+      wipe(ns.deQueue())
+      ns.updateDisenchantButton()
       updateQueueWindow()
     else
       msg("Shift-click Clear to empty the queue.")

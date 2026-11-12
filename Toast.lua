@@ -83,14 +83,17 @@ local function createToast()
 end
 
 -- opts: incomplete (price has gaps), detail (small line; default: the amount
--- per repeat, or profit/loss).
+-- per repeat, or profit/loss), compare (an amount added up like the main
+-- one and shown as the small line after compareLabel, e.g. "projected ").
 local function showToast(key, title, icon, amount, opts)
   opts = opts or {}
   if not toast then createToast() end
   local again = toast:IsShown() and toast.key == key
   toast.casts = again and toast.casts + 1 or 1
   toast.total = (again and toast.total or 0) + amount
+  toast.compare = (again and toast.compare or 0) + (opts.compare or 0)
   toast.key = key
+  if opts.compare then opts.detail = (opts.compareLabel or "") .. API.Money(toast.compare) end
 
   local good = toast.total >= 0
   toast.icon:SetTexture(icon or 134400) -- question mark
@@ -113,12 +116,17 @@ end
 ns.showToast = showToast
 
 -- kind: "queued" (profit goes to the queue's total), "reagent" (a reagent for
--- the queue: counts what it saved over buying it - no AH cut, it isn't sold).
+-- the queue: counts what it saved over buying it - no AH cut, it isn't sold),
+-- "disenchant" (queued to disenchant: its projected shuffle profit, counted
+-- for real when it's disenchanted).
 local function craftToast(spellID, kind)
   local recipe = recipeForSpell(spellID)
   if recipe and recipe.productID then evaluate(recipe) end
   local amount, opts = recipe and recipe.profit, { incomplete = recipe and recipe.incomplete }
-  if kind == "reagent" then
+  if kind == "disenchant" then
+    amount = recipe and recipe.shuffleProfit
+    opts = { incomplete = recipe and recipe.shuffleIncomplete, label = "projected, to disenchant" }
+  elseif kind == "reagent" then
     local buy = recipe and recipe.productID and API.BuyPrice(recipe.productID)
     amount = (buy and recipe.missing == 0) and (buy * recipe.made - recipe.cost) or nil
     opts = { label = amount and (amount >= 0 and "saved vs buying" or "more than buying"), each = " saved per craft" }

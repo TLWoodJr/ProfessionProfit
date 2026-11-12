@@ -23,11 +23,12 @@ local panel, refresh -- the Profit panel (createPanel) and its refresh, defined 
 
 local COLUMNS = {
   { key = "name",   title = "Recipe",    width = nil, justify = "LEFT" },
-  { key = "cost",   title = "Cost",      width = 95,  justify = "RIGHT" },
-  { key = "sell",   title = "Sells for", width = 95,  justify = "RIGHT" },
-  { key = "profit", title = "Profit",    width = 95,  justify = "RIGHT" },
-  { key = "margin", title = "Margin",    width = 60,  justify = "RIGHT" },
-  { key = "stock",  title = "Stock",     width = 45,  justify = "RIGHT" },
+  { key = "cost",   title = "Cost",      width = 72,  justify = "RIGHT" },
+  { key = "sell",   title = "Sells for", width = 72,  justify = "RIGHT" },
+  { key = "profit", title = "Profit",    width = 72,  justify = "RIGHT" },
+  { key = "shuffle", title = "Shuffle",  width = 72,  justify = "RIGHT" },
+  { key = "margin", title = "Margin",    width = 56,  justify = "RIGHT" },
+  { key = "stock",  title = "Stock",     width = 44,  justify = "RIGHT" },
   { key = "queue",  title = "",          width = 22,  justify = "CENTER", noSort = true },
 }
 
@@ -37,6 +38,7 @@ local SORT_VALUE = {
   cost = function(r) return r.cost end,
   sell = function(r) return r.sell end,
   profit = function(r) return r.profit end,
+  shuffle = function(r) return r.shuffleProfit end,
   margin = function(r) return r.margin end,
 }
 
@@ -137,6 +139,24 @@ local function showRecipeTooltip(row)
       if db.minMargin then listAt(("For a %s%% margin"):format(db.minMargin), recipe.cost * (1 + db.minMargin / 100)) end
       if db.minProfit then listAt("For " .. API.Money(db.minProfit) .. " profit", recipe.cost + db.minProfit) end
     end
+  end
+  if recipe.deValue then
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine("Shuffle: craft and disenchant", 1, 0.82, 0)
+    local _, _, yields = API.DisenchantValue(recipe.productID)
+    for _, y in ipairs(yields or {}) do
+      if y.chance > 0 then
+        local range = y.min == y.max and y.min or (y.min .. "-" .. y.max)
+        GameTooltip:AddDoubleLine(("  %sx %s  %d%%"):format(range, ns.itemName(y.id) or API.DE_MATS[y.id] or "?", math.floor(y.chance * 100 + 0.5)),
+          y.value and (API.Money(y.value) .. GREY .. " expected|r") or (RED .. "no price|r"), 0.85, 0.85, 0.85, 1, 1, 1)
+      end
+    end
+    local each = recipe.made > 1 and (" x" .. recipe.made) or ""
+    GameTooltip:AddDoubleLine("Disenchants into" .. each, API.Money(recipe.deValue), 1, 1, 1, 1, 1, 1)
+    GameTooltip:AddDoubleLine("After 5% AH cut", API.Money(recipe.deValue * (1 - API.AH_CUT)), 0.85, 0.85, 0.85, 1, 1, 1)
+    local good = recipe.shuffleProfit >= 0
+    GameTooltip:AddDoubleLine("Shuffle profit", API.Money(recipe.shuffleProfit), 1, 1, 1, good and 0.2 or 1, good and 1 or 0.3, 0.2)
+    GameTooltip:AddLine("Expected materials per disenchant (classic tables), at their cheapest AH price.", 0.6, 0.6, 0.6, true)
   end
   if recipe.productStale then
     GameTooltip:AddLine(("The crafted item's last known price is %s - Scan AH to update it."):format(API.StaleText(recipe.productStale)),
@@ -265,32 +285,52 @@ local function fillRow(row, recipe)
     c.profit:SetTextColor(1, 1, 1)
     c.margin:SetText("")
   end
+
+  if recipe.shuffleProfit then
+    c.shuffle:SetText(API.Money(recipe.shuffleProfit) .. (recipe.shuffleIncomplete and (RED .. "*|r") or ""))
+    c.shuffle:SetTextColor(recipe.shuffleProfit >= 0 and 0.2 or 1, recipe.shuffleProfit >= 0 and 1 or 0.3, 0.2)
+  else
+    c.shuffle:SetText(GREY .. "-|r")
+    c.shuffle:SetTextColor(1, 1, 1)
+  end
   row:Show()
 end
 
 -- No price at all for the crafted item or a reagent (an old price is
 -- still a price: the last known one, shown grey).
 local function priceMissing(recipe)
-  return not recipe.profit or recipe.missing > 0
+  return (not recipe.profit and not recipe.shuffleProfit) or recipe.missing > 0
 end
 
--- Table filters: never bind-on-pickup items (Scan AH still searches them -
--- they can be reagents). Recipes missing a price show only with "Missing
--- prices" ticked, whatever the other filters. With "Profitable only"
--- ticked the rest need a profit above 0, the minimum profit per craft
--- (copper) and the minimum margin (%) - both, or either with db.minAny ("or")
--- - by last known prices where that's all there is. Unticked, the minimums
+-- The better of selling it and disenchanting it: profit, margin.
+local function bestProfit(recipe)
+  local profit, margin = recipe.profit, recipe.margin
+  if recipe.shuffleProfit and (not profit or recipe.shuffleProfit > profit) then
+    profit = recipe.shuffleProfit
+    margin = recipe.cost > 0 and profit / recipe.cost or nil
+  end
+  return profit, margin
+end
+
+-- Table filters: never bind-on-pickup items unless they can be disenchanted
+-- (Scan AH still searches them - they can be reagents). Recipes missing a
+-- price show only with "Missing prices" ticked, whatever the other filters.
+-- With "Profitable only" ticked the rest need a profit above 0, the minimum
+-- profit per craft (copper) and the minimum margin (%) - both, or either
+-- with db.minAny ("or") - by last known prices where that's all there is,
+-- and by the better of selling and disenchanting. Unticked, the minimums
 -- are ignored.
 local function passesFilters(recipe)
-  if isBoP(recipe.productID) then return false end
+  if isBoP(recipe.productID) and not recipe.deValue then return false end
   if priceMissing(recipe) then return not db.hideIncomplete end
   -- Not listed: "Not listed" ticked shows it whatever its last known price says.
   if recipe.notListed and not db.hideUnlisted then return true end
   if not db.profitableOnly then return true end
   local minProfit, minMargin = db.minProfit, db.minMargin
-  if recipe.profit <= 0 then return false end
-  local profitOK = not minProfit or recipe.profit >= minProfit
-  local marginOK = not minMargin or (recipe.margin ~= nil and recipe.margin * 100 >= minMargin)
+  local profit, margin = bestProfit(recipe)
+  if profit <= 0 then return false end
+  local profitOK = not minProfit or profit >= minProfit
+  local marginOK = not minMargin or (margin ~= nil and margin * 100 >= minMargin)
   if minProfit and minMargin and db.minAny then return profitOK or marginOK end
   return profitOK and marginOK
 end
@@ -313,10 +353,11 @@ function refresh()
   end
   sortRecipes(shown)
   panel.shown = shown
-  panel.byProduct = {}
+  local byProduct = {}
   for _, recipe in ipairs(recipes) do
-    if recipe.productID then panel.byProduct[recipe.productID] = recipe end
+    if recipe.productID then byProduct[recipe.productID] = recipe end
   end
+  panel.byProduct = ns.withKnown(byProduct)
 
   local content = panel.content
   content:SetHeight(math.max(#shown * ROW_HEIGHT, 1))
@@ -335,14 +376,21 @@ function refresh()
   end
   -- Keep the reagent panel's Add to Queue preview current.
   if ns.popup and ns.popup:IsShown() and not ns.popup.recipe then ns.showBatch() end -- prices may have changed
-  panel.summary:SetText(("%d recipes, %d profitable.\n%sgrey|r old price  %sblue|r not listed  %s*|r missing price  %s!|r undercut")
-    :format(#recipes, profitable, GREY, BLUE, RED, ORANGE))
+  local shownText = #shown < #recipes and (", %d shown"):format(#shown) or ""
+  panel.summary:SetText(("%d recipes, %d profitable%s.\n%sgrey|r old price  %sblue|r not listed  %s*|r missing price  %s!|r undercut")
+    :format(#recipes, profitable, shownText, GREY, BLUE, RED, ORANGE))
 
   for _, header in ipairs(panel.headers) do
     local arrow = ""
     if header.key == db.sortKey then arrow = db.sortDesc and " v" or " ^" end
     header.label:SetText(header.title .. arrow)
   end
+  -- Enchanting is the only profession with enchant recipes.
+  local enchanting = false
+  for _, recipe in ipairs(recipes) do
+    if recipe.isEnchant then enchanting = true break end
+  end
+  panel.deScanButton:SetShown(enchanting)
   updateScanButton()
 end
 ns.refresh = refresh
@@ -717,6 +765,22 @@ local function createPanel(host)
   end)
   restock:SetScript("OnLeave", GameTooltip_Hide)
 
+  -- Disenchant Scan: shown while Enchanting is open (see refresh).
+  local deScan = CreateFrame("Button", nil, queueBar, "UIPanelButtonTemplate")
+  deScan:SetSize(110, 22)
+  deScan:SetPoint("RIGHT", restock, "LEFT", -10, 0)
+  deScan:SetText("Disenchant Scan")
+  deScan:SetScript("OnClick", function() ns.toggleDisenchantScan() end)
+  deScan:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Disenchant Scan")
+    GameTooltip:AddLine("Find gear on the AH that's worth more disenchanted than its buyout. Needs the auction house open.", 1, 1, 1, true)
+    GameTooltip:Show()
+  end)
+  deScan:SetScript("OnLeave", GameTooltip_Hide)
+  deScan:Hide()
+  panel.deScanButton = deScan
+
   -- Qty sits beside Add to Queue and only shows with Use Restock off; Use
   -- Restock moves over when it's hidden.
   local function layoutQty()
@@ -744,5 +808,9 @@ local function createPanel(host)
     expandAll()
     refresh()
   end)
+  -- Hooks OnShow / OnHide, so after the scripts above are set. A problem
+  -- with the (secure) Disenchant button must never cost the whole tab.
+  local ok, err = pcall(ns.attachDisenchantButton, panel)
+  if not ok then log("Disenchant button not attached:", err) end
 end
 ns.createPanel = createPanel
