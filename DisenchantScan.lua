@@ -290,7 +290,7 @@ startScan = function()
   win.done = nil
   scan = { last = GetTime(), loaded = 0, sent = false }
   local mine = scan
-  -- Enchanting materials are priced from Auctionator, as everywhere else.
+  -- Enchanting materials are priced from the chosen price source, as everywhere else.
   local function send()
     if scan ~= mine then return end
     if not ready() then C_Timer.After(0.25, send) return end

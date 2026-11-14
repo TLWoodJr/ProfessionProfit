@@ -3,9 +3,10 @@
 Adds a **Profit** tab to the profession window for WoW Forever. It shows what every recipe you know makes at today's
 auction house prices. It also queues the crafts, builds the shopping list and buys the vendor reagents.
 
-**Requires [Auctionator](https://www.curseforge.com/wow/addons/auctionator).** Scan AH and the shopping list run
-through it, and by default prices come from it, so the numbers match its "To Craft" column. With
-[TradeSkillMaster](https://www.curseforge.com/wow/addons/tradeskill-master) installed you can price from TSM instead.
+**Requires a price source: [Auctionator](https://www.curseforge.com/wow/addons/auctionator) or
+[TradeSkillMaster](https://www.curseforge.com/wow/addons/tradeskill-master)** (either one, or both). With Auctionator
+the numbers match its "To Craft" column. Scan AH and the shopping list need Auctionator; with TSM only, update prices
+with TSM itself.
 
 ## Features
 
