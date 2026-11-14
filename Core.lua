@@ -2,9 +2,9 @@
 -- learned recipe with reagent cost, sale price and profit. While the auction
 -- house is open it searches the AH for all reagents and crafted items.
 --
--- Prices come from Auctionator through LibCraftProfit-1.0 (shared with
--- RecipeProfit), and Scan AH searches through Auctionator too, so the
--- numbers always match Auctionator's.
+-- Prices come from Auctionator or TSM (chosen with the cog, PriceSource.lua)
+-- through LibCraftProfit-1.0 (shared with RecipeProfit). Scan AH searches
+-- through Auctionator.
 --
 -- Two profession UIs are supported:
 --   modern:  ProfessionsFrame + C_TradeSkillUI (WoW Forever: one window, K)
@@ -217,7 +217,7 @@ end
 ns.stockOf = stockOf
 
 ------------------------------------------------------------------------------
--- Pricing (LibCraftProfit: Auctionator's prices, same rules as its "To Craft")
+-- Pricing (LibCraftProfit: the chosen price source)
 ------------------------------------------------------------------------------
 
 -- "Buy items from vendors" (reagent window, /pp vendor): ticked unless

@@ -2,13 +2,8 @@
 
 local ADDON, ns = ...
 local ROW_HEIGHT, API, RED, GREY, GREEN, DIFFICULTY_COLORS = ns.ROW_HEIGHT, ns.API, ns.RED, ns.GREY, ns.GREEN, ns.DIFFICULTY_COLORS
-local ORANGE = "|cffff9933" -- undercut marker
 local BLUE = "|cff4fc3f7" -- not listed on the AH
 
--- "1 listed at 51c, most at 1s 69c" for an undercut ({ cheapest, market, below }).
-local function undercutText(u)
-  return ("%d listed from %s, most at %s"):format(u.below, API.Money(u.cheapest), API.Money(u.market))
-end
 local log, professionInfo, expandAll, isBoP, ownedAuctions, evaluate = ns.log, ns.professionInfo, ns.expandAll, ns.isBoP, ns.ownedAuctions, ns.evaluate
 local readRecipes, openRecipeInUI, closeHost, updateScanButton, startScan = ns.readRecipes, ns.openRecipeInUI, ns.closeHost, ns.updateScanButton, ns.startScan
 local db
@@ -23,12 +18,13 @@ local panel, refresh -- the Profit panel (createPanel) and its refresh, defined 
 
 local COLUMNS = {
   { key = "name",   title = "Recipe",    width = nil, justify = "LEFT" },
-  { key = "cost",   title = "Cost",      width = 72,  justify = "RIGHT" },
-  { key = "sell",   title = "Sells for", width = 72,  justify = "RIGHT" },
-  { key = "profit", title = "Profit",    width = 72,  justify = "RIGHT" },
-  { key = "shuffle", title = "Shuffle",  width = 72,  justify = "RIGHT" },
-  { key = "margin", title = "Margin",    width = 56,  justify = "RIGHT" },
-  { key = "stock",  title = "Stock",     width = 44,  justify = "RIGHT" },
+  { key = "cost",   title = "Cost",      width = 60,  justify = "RIGHT" },
+  { key = "sell",   title = "Sells for", width = 60,  justify = "RIGHT" },
+  { key = "profit", title = "Profit",    width = 60,  justify = "RIGHT" },
+  { key = "shuffle", title = "Shuffle",  width = 60,  justify = "RIGHT" },
+  { key = "vendor", title = "Vendor",    width = 60,  justify = "RIGHT" },
+  { key = "margin", title = "Margin",    width = 44,  justify = "RIGHT" },
+  { key = "stock",  title = "Stock",     width = 36,  justify = "RIGHT" },
   { key = "queue",  title = "",          width = 22,  justify = "CENTER", noSort = true },
 }
 
@@ -39,6 +35,7 @@ local SORT_VALUE = {
   sell = function(r) return r.sell end,
   profit = function(r) return r.profit end,
   shuffle = function(r) return r.shuffleProfit end,
+  vendor = function(r) return r.vendorProfit end,
   margin = function(r) return r.margin end,
 }
 
@@ -90,14 +87,10 @@ local function showRecipeTooltip(row)
       right = API.Money(reagent.price * reagent.count)
       if reagent.count > 1 then right = right .. GREY .. " (" .. API.Money(reagent.price) .. " ea)|r" end
       if reagent.src == "vendor" then right = right .. GREY .. " vendor|r" end
-      if reagent.short then right = right .. RED .. " not enough listed|r" end
     else
       right = RED .. "no price|r"
     end
     GameTooltip:AddDoubleLine(left, right, 0.85, 0.85, 0.85, 1, 1, 1)
-    if reagent.undercut then
-      GameTooltip:AddLine("    " .. ORANGE .. "! undercut: " .. undercutText(reagent.undercut) .. "|r", 1, 1, 1)
-    end
   end
   local cost = API.Money(recipe.cost)
   if recipe.missing > 0 then cost = cost .. RED .. " +" .. recipe.missing .. " unpriced|r" end
@@ -113,10 +106,6 @@ local function showRecipeTooltip(row)
       sells = GREY .. "last known price|r " .. sells
     end
     GameTooltip:AddDoubleLine("Sells for" .. each, sells, 1, 1, 1, 1, 1, 1)
-    if recipe.productUndercut then
-      GameTooltip:AddLine("    " .. ORANGE .. "! undercut: " .. undercutText(recipe.productUndercut) ..
-        " (profit uses the cheapest)|r", 1, 1, 1, true)
-    end
     GameTooltip:AddDoubleLine("After 5% AH cut", API.Money(recipe.sell * recipe.made * (1 - API.AH_CUT)), 0.85, 0.85, 0.85, 1, 1, 1)
     local good = recipe.profit >= 0
     GameTooltip:AddDoubleLine("Profit", API.Money(recipe.profit), 1, 1, 1, good and 0.2 or 1, good and 1 or 0.3, 0.2)
@@ -139,6 +128,14 @@ local function showRecipeTooltip(row)
       if db.minMargin then listAt(("For a %s%% margin"):format(db.minMargin), recipe.cost * (1 + db.minMargin / 100)) end
       if db.minProfit then listAt("For " .. API.Money(db.minProfit) .. " profit", recipe.cost + db.minProfit) end
     end
+  end
+  if recipe.vendorSell then
+    GameTooltip:AddLine(" ")
+    local each = recipe.made > 1 and (" x" .. recipe.made) or ""
+    GameTooltip:AddDoubleLine("Vendor pays" .. each, API.Money(recipe.vendorSell * recipe.made), 1, 1, 1, 1, 1, 1)
+    local good = recipe.vendorProfit >= 0
+    GameTooltip:AddDoubleLine("Vendor profit", API.Money(recipe.vendorProfit), 1, 1, 1, good and 0.2 or 1, good and 1 or 0.3, 0.2)
+    GameTooltip:AddLine("What a vendor pays for it, minus the craft cost (no AH cut).", 0.6, 0.6, 0.6, true)
   end
   if recipe.deValue then
     GameTooltip:AddLine(" ")
@@ -240,6 +237,18 @@ local function createRow(parent, index)
   return row
 end
 
+-- Money for the table's cells, short so the recipe names keep their room:
+-- 1234g at 100 gold and up, 12g 34s from 1 gold, 34s 56c below. The
+-- tooltip shows exact amounts.
+local function money(copper)
+  copper = math.floor(copper + 0.5)
+  local sign, n = copper < 0 and "-" or "", math.abs(copper)
+  local g, s = math.floor(n / 10000), math.floor(n / 100) % 100
+  if g >= 100 then return sign .. g .. "|cffffd700g|r" end
+  if g >= 1 then return sign .. g .. "|cffffd700g|r" .. (s > 0 and (" " .. s .. "|cffc7c7cfs|r") or "") end
+  return API.Money(copper)
+end
+
 local function fillRow(row, recipe)
   row.recipe = recipe
   row.queueButton:SetShown(recipe.recipeID ~= nil)
@@ -253,26 +262,24 @@ local function fillRow(row, recipe)
   end
 
   -- Grey: a last known (old) price is part of it.
-  local cost = recipe.staleCount > 0 and (GREY .. API.Money(recipe.cost) .. "|r") or API.Money(recipe.cost)
+  local cost = recipe.staleCount > 0 and (GREY .. money(recipe.cost) .. "|r") or money(recipe.cost)
   if recipe.missing > 0 then cost = cost .. RED .. " +" .. recipe.missing .. "?|r" end
-  if recipe.undercut then cost = cost .. ORANGE .. "!|r" end
   c.cost:SetText(cost)
 
   if recipe.isEnchant then
     c.sell:SetText(GREY .. "enchant|r")
   elseif recipe.notListed then
-    c.sell:SetText(BLUE .. API.Money(recipe.sell * recipe.made):gsub("|r", "|r" .. BLUE) .. "|r")
+    c.sell:SetText(BLUE .. money(recipe.sell * recipe.made):gsub("|r", "|r" .. BLUE) .. "|r")
   elseif recipe.sell then
-    c.sell:SetText((recipe.productStale and (GREY .. API.Money(recipe.sell * recipe.made) .. "|r") or API.Money(recipe.sell * recipe.made))
-      .. (recipe.productUndercut and (ORANGE .. "!|r") or ""))
+    c.sell:SetText(recipe.productStale and (GREY .. money(recipe.sell * recipe.made) .. "|r") or money(recipe.sell * recipe.made))
   else
     c.sell:SetText(RED .. "no price|r")
   end
 
   if recipe.profit then
     -- To the whole copper (fractions dropped), like everything else here.
-    local text = API.Money(recipe.profit)
-    if recipe.missing > 0 or recipe.shortCount > 0 then
+    local text = money(recipe.profit)
+    if recipe.missing > 0 then
       text = text .. RED .. "*|r"
     elseif recipe.incomplete then
       text = text .. GREY .. "*|r" -- last known prices
@@ -287,11 +294,19 @@ local function fillRow(row, recipe)
   end
 
   if recipe.shuffleProfit then
-    c.shuffle:SetText(API.Money(recipe.shuffleProfit) .. (recipe.shuffleIncomplete and (RED .. "*|r") or ""))
+    c.shuffle:SetText(money(recipe.shuffleProfit) .. (recipe.shuffleIncomplete and (RED .. "*|r") or ""))
     c.shuffle:SetTextColor(recipe.shuffleProfit >= 0 and 0.2 or 1, recipe.shuffleProfit >= 0 and 1 or 0.3, 0.2)
   else
     c.shuffle:SetText(GREY .. "-|r")
     c.shuffle:SetTextColor(1, 1, 1)
+  end
+
+  if recipe.vendorProfit then
+    c.vendor:SetText(money(recipe.vendorProfit) .. (recipe.missing > 0 and (RED .. "*|r") or recipe.vendorIncomplete and (GREY .. "*|r") or ""))
+    c.vendor:SetTextColor(recipe.vendorProfit >= 0 and 0.2 or 1, recipe.vendorProfit >= 0 and 1 or 0.3, 0.2)
+  else
+    c.vendor:SetText(GREY .. "-|r")
+    c.vendor:SetTextColor(1, 1, 1)
   end
   row:Show()
 end
@@ -299,15 +314,18 @@ end
 -- No price at all for the crafted item or a reagent (an old price is
 -- still a price: the last known one, shown grey).
 local function priceMissing(recipe)
-  return (not recipe.profit and not recipe.shuffleProfit) or recipe.missing > 0
+  return (not recipe.profit and not recipe.shuffleProfit and not recipe.vendorProfit) or recipe.missing > 0
 end
 
--- The better of selling it and disenchanting it: profit, margin.
+-- The best of selling it on the AH, disenchanting it and selling it to a
+-- vendor: profit, margin.
 local function bestProfit(recipe)
   local profit, margin = recipe.profit, recipe.margin
-  if recipe.shuffleProfit and (not profit or recipe.shuffleProfit > profit) then
-    profit = recipe.shuffleProfit
-    margin = recipe.cost > 0 and profit / recipe.cost or nil
+  for _, other in ipairs({ recipe.shuffleProfit or false, recipe.vendorProfit or false }) do
+    if other and (not profit or other > profit) then
+      profit = other
+      margin = recipe.cost > 0 and profit / recipe.cost or nil
+    end
   end
   return profit, margin
 end
@@ -318,7 +336,7 @@ end
 -- With "Profitable only" ticked the rest need a profit above 0, the minimum
 -- profit per craft (copper) and the minimum margin (%) - both, or either
 -- with db.minAny ("or") - by last known prices where that's all there is,
--- and by the better of selling and disenchanting. Unticked, the minimums
+-- and by the best of selling, disenchanting and vendoring. Unticked, the minimums
 -- are ignored.
 local function passesFilters(recipe)
   if isBoP(recipe.productID) and not recipe.deValue then return false end
@@ -377,8 +395,8 @@ function refresh()
   -- Keep the reagent panel's Add to Queue preview current.
   if ns.popup and ns.popup:IsShown() and not ns.popup.recipe then ns.showBatch() end -- prices may have changed
   local shownText = #shown < #recipes and (", %d shown"):format(#shown) or ""
-  panel.summary:SetText(("%d recipes, %d profitable%s.\n%sgrey|r old price  %sblue|r not listed  %s*|r missing price  %s!|r undercut")
-    :format(#recipes, profitable, shownText, GREY, BLUE, RED, ORANGE))
+  panel.summary:SetText(("%d recipes, %d profitable%s.\n%sgrey|r old price  %sblue|r not listed  %s*|r missing price")
+    :format(#recipes, profitable, shownText, GREY, BLUE, RED))
 
   for _, header in ipairs(panel.headers) do
     local arrow = ""
@@ -472,6 +490,10 @@ local function createPanel(host)
     GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
     GameTooltip:AddLine("Scan AH")
     GameTooltip:AddLine("Searches the AH for every reagent and crafted item of your learned recipes, through Auctionator (results show in its Shopping tab). Prices update as they come in.", 1, 1, 1, true)
+    local source = API.ActiveSource()
+    if source and source.key ~= "auctionator" then
+      GameTooltip:AddLine("Prices come from " .. source.name .. ", which this doesn't update: change it with the cog at the bottom left.", 1, 0.4, 0.4, true)
+    end
     GameTooltip:AddLine(db.noVendor and "Vendor-sold reagents are searched too, for the craft queue's shopping list (Buy items from vendors is off). The table always uses their vendor price."
       or "Vendor-sold reagents are skipped: their vendor price is used.", 0.7, 0.7, 0.7, true)
     GameTooltip:Show()
@@ -732,7 +754,7 @@ local function createPanel(host)
   topUp:SetChecked(db.queueTopUp)
 
   local qtyBox = CreateFrame("EditBox", nil, queueBar, "InputBoxTemplate")
-  qtyBox:SetSize(34, 20)
+  qtyBox:SetSize(42, 20)
   qtyBox:SetPoint("RIGHT", queueButton, "LEFT", -10, 0)
   qtyBox:SetAutoFocus(false)
   qtyBox:SetNumeric(true)
@@ -796,8 +818,26 @@ local function createPanel(host)
   end)
   layoutQty()
 
+  -- Bottom left: the price source menu (cog).
+  local cog = CreateFrame("Button", nil, panel)
+  cog:SetSize(20, 20)
+  cog:SetPoint("BOTTOMLEFT", 14, 14)
+  cog:SetNormalTexture("Interface\\Icons\\INV_Misc_Gear_01")
+  cog:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+  cog:SetScript("OnClick", function(self) ns.togglePriceSourceMenu(self) end)
+  cog:SetScript("OnEnter", function(self)
+    local source = API.ActiveSource()
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Price source")
+    GameTooltip:AddLine(source and source.name or "None loaded - install Auctionator or TSM.", 1, 1, 1, true)
+    GameTooltip:AddLine("Click to choose where prices come from.", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end)
+  cog:SetScript("OnLeave", GameTooltip_Hide)
+  panel.cog = cog
+
   panel.summary = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  panel.summary:SetPoint("BOTTOMLEFT", 16, 12)
+  panel.summary:SetPoint("BOTTOMLEFT", cog, "BOTTOMRIGHT", 8, -2)
   panel.summary:SetPoint("RIGHT", queueBar, "LEFT", -10, 0)
   panel.summary:SetJustifyH("LEFT")
 

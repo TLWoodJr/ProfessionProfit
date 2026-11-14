@@ -60,16 +60,16 @@ local function lastScanTime(prof)
   return db.lastScan[scanKey(prof)]
 end
 
--- Is the crafted item missing from the AH right now, by today's Scan AH?
--- Stackable items: today's order book lists none. Others: Auctionator
--- didn't see it today, though this profession was scanned today. False
--- when it can't tell (not scanned today).
+-- Is the crafted item missing from the AH right now? Auctionator didn't
+-- see it today, though this profession was scanned today. False when it
+-- can't tell (not scanned today, or the price source doesn't say when it
+-- last saw an item - TSM).
 local function today(t) return date("%Y%m%d", t) == date("%Y%m%d") end
 local function notListed(recipe)
   local id = recipe.productID
   if not id or recipe.isEnchant then return false end
-  local book = API.Book(id)
-  if book and today(book.t) then return #book.rows == 0 end
+  local source = API.ActiveSource()
+  if not (source and source.hasAge) then return false end
   local prof = professionName()
   local last = prof and lastScanTime(prof)
   if not (last and today(last)) then return false end
@@ -84,7 +84,6 @@ end
 
 local function updateScanButton()
   if not ns.panel then return end
-  if API.IsScanningBooks() then return end -- the scan's progress shows instead
   ns.panel.scanButton:SetText("Scan AH")
   local prof = professionName()
   local last = prof and lastScanTime(prof)
@@ -100,30 +99,17 @@ local function updateScanButton()
 end
 ns.updateScanButton = updateScanButton
 
--- Step 2: one Auctionator multi-search for everything, so its price
--- database (sell prices, and the fallback for items without an order book)
--- is current too.
-local function searchAuctionator(prof, items)
-  local count, reason = API.Search(items, { force = true, caller = ADDON, noVendor = ns.priceOpts().noVendor })
-  log("scan", prof, count or 0, reason or "")
-  if not count then
-    msg(reason)
-  elseif count > 0 then
-    msg(("Searching %d item(s) in Auctionator's Shopping tab - the table updates as results come in."):format(count))
-  end
-  updateScanButton()
-end
-
--- Scan AH button. Step 1: the order book (every listing) of each reagent
--- and crafted item, so costs are what the amount you need really costs,
--- and undercuts show. Then step 2 above. Clicking again stops it.
+-- Scan AH button: one Auctionator multi-search for every reagent and
+-- crafted item of the open profession. Auctionator stores the prices and
+-- the table updates as they come in.
 local function startScan(retries)
-  if API.IsScanningBooks() then
-    API.CancelBookScan()
-    return
-  end
   if not ahOpen() then
     msg("Open the auction house first.")
+    return
+  end
+  local source = API.ActiveSource()
+  if source and source.key ~= "auctionator" then
+    msg(("Prices come from %s, which Scan AH can't update (it searches through Auctionator). Update TSM's prices with TSM itself, or pick Auctionator with the cog at the bottom left."):format(source.name))
     return
   end
   local prof = professionName() or "?"
@@ -142,41 +128,16 @@ local function startScan(retries)
     C_Timer.After(0.5, function() startScan((retries or 0) + 1) end)
     return
   end
-  local items = scanItems(recipes)
-  local ids = {}
-  for _, item in ipairs(items) do ids[#ids + 1] = item.id end
-  local count, reason = API.ScanBooks(ids, {
-    noVendor = ns.priceOpts().noVendor,
-    onProgress = function(done, total)
-      if ns.panel then ns.panel.scanButton:SetText("Stop") end
-      setStatus(("Reading order books %d/%d..."):format(done, total))
-      if ns.refreshSoon then ns.refreshSoon() end
-    end,
-    onDone = function(why, done, total)
-      log("order books", why, done, "/", total)
-      if why == "done" then
-        markScanned(prof)
-        searchAuctionator(prof, items)
-      else
-        msg(("Order book scan %s after %d of %d items."):format(why == "closed" and "stopped (AH closed)" or "stopped", done, total))
-        updateScanButton()
-      end
-      if ns.refreshSoon then ns.refreshSoon() end
-    end,
-  })
-  log("scan", prof, "order books:", count or 0, reason or "")
+  local count, reason = API.Search(scanItems(recipes), { force = true, caller = ADDON, noVendor = ns.priceOpts().noVendor })
+  log("scan", prof, count or 0, reason or "")
   if not count then
     msg(reason)
-    updateScanButton()
-    return
-  end
-  if count == 0 then
+  else
     markScanned(prof)
-    searchAuctionator(prof, items)
-    return
+    if count > 0 then
+      msg(("Searching %d item(s) in Auctionator's Shopping tab - the table updates as results come in."):format(count))
+    end
   end
-  if ns.panel then ns.panel.scanButton:SetText("Stop") end
-  setStatus(("Reading order books 0/%d..."):format(count))
-  msg(("Reading the order books of %d item(s), then searching everything in Auctionator."):format(count))
+  updateScanButton()
 end
 ns.startScan = startScan

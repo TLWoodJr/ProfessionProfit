@@ -37,23 +37,121 @@ local function lastBag() return NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or
 
 ------------------------------------------------------------------------------
 -- The queue: { itemID, name, count, cost (each), projected (profit each) },
--- per character. The run: what's been disenchanted from it since it was last
--- empty - casts, realized and projected profit, casts with unpriced materials.
+-- one for all your characters: craft on one, mail to your enchanter and
+-- disenchant there. The run: what's been disenchanted from it since it was
+-- last empty - casts, realized and projected profit, casts with unpriced
+-- materials. db.deHeld[charKey] = { [itemID] = count in bags } of queued
+-- items, as each character last saw them.
 ------------------------------------------------------------------------------
+
+local NEW_RUN = function() return { casts = 0, realized = 0, projected = 0, unpriced = 0 } end
+
+-- Older saves kept a queue and a run per character: merge them.
+ns.onInit(function(saved)
+  local old = saved.deQueue
+  if type(old) == "table" and type(next(old)) == "string" then -- keyed by character
+    local merged = {}
+    for _, list in pairs(old) do
+      for _, e in ipairs(list) do
+        local into
+        for _, m in ipairs(merged) do if m.itemID == e.itemID then into = m break end end
+        if into then
+          local total = into.count + e.count
+          into.cost = (into.cost * into.count + e.cost * e.count) / total
+          into.projected = (into.projected * into.count + e.projected * e.count) / total
+          into.count = total
+        else
+          merged[#merged + 1] = e
+        end
+      end
+    end
+    saved.deQueue = merged
+  end
+  local run = saved.deRun
+  if type(run) == "table" and run.casts == nil then
+    local sum = NEW_RUN()
+    for _, r in pairs(run) do
+      if type(r) == "table" then
+        for k in pairs(sum) do sum[k] = sum[k] + (r[k] or 0) end
+      end
+    end
+    saved.deRun = sum
+  end
+end)
 
 local function deQueue()
   db.deQueue = db.deQueue or {}
-  db.deQueue[charKey()] = db.deQueue[charKey()] or {}
-  return db.deQueue[charKey()]
+  return db.deQueue
 end
 ns.deQueue = deQueue
 
 local function deRun()
-  db.deRun = db.deRun or {}
-  db.deRun[charKey()] = db.deRun[charKey()] or { casts = 0, realized = 0, projected = 0, unpriced = 0 }
-  return db.deRun[charKey()]
+  db.deRun = db.deRun or NEW_RUN()
+  return db.deRun
 end
 ns.deRun = deRun
+
+-- Save how many of each queued item this character has in its bags.
+local function recordHeld()
+  db.deHeld = db.deHeld or {}
+  local held = {}
+  for _, e in ipairs(deQueue()) do
+    local n = ns.bagCount(e.itemID)
+    if n > 0 then held[e.itemID] = n end
+  end
+  db.deHeld[charKey()] = next(held) and held or nil
+end
+
+-- Your other characters holding a queued item: { { name, count }, ... },
+-- most first, and how many that is.
+local function heldElsewhere(itemID)
+  local list, total, me = {}, 0, charKey()
+  for key, held in pairs(db.deHeld or {}) do
+    local n = key ~= me and held[itemID]
+    if n and n > 0 then
+      list[#list + 1] = { name = ns.crafterName(key), count = n }
+      total = total + n
+    end
+  end
+  table.sort(list, function(a, b) return a.count > b.count end)
+  return list, total
+end
+ns.deHeldElsewhere = heldElsewhere
+
+-- Where a queued item is, for a row: "here/queued" coloured (green: all
+-- here, yellow: some, red: none) and the other characters holding some.
+local function whereText(e)
+  local have = ns.bagCount(e.itemID)
+  local color = have >= e.count and "|cff40ff40" or have > 0 and "|cffffd933" or "|cffff6666"
+  local text = ("%s%d/%d|r"):format(color, math.min(have, e.count), e.count)
+  local others = heldElsewhere(e.itemID)
+  local parts = {}
+  for i, o in ipairs(others) do
+    if i > 2 then parts[#parts + 1] = "..." break end
+    parts[#parts + 1] = o.name .. " " .. o.count
+  end
+  return text, #parts > 0 and (GREY .. "(" .. table.concat(parts, ", ") .. ")|r") or nil
+end
+ns.deWhereText = whereText
+
+-- Tooltip lines: where a queued item is across your characters.
+local function addWhereLines(e)
+  local have = ns.bagCount(e.itemID)
+  GameTooltip:AddDoubleLine("In your bags", have, 0.8, 0.8, 0.8, 1, 1, 1)
+  local others, elsewhere = heldElsewhere(e.itemID)
+  for _, o in ipairs(others) do
+    GameTooltip:AddDoubleLine("On " .. o.name, o.count, 0.8, 0.8, 0.8, 1, 1, 1)
+  end
+  local unseen = e.count - have - elsewhere
+  if unseen > 0 then
+    GameTooltip:AddDoubleLine("Not in anyone's bags", unseen, 0.8, 0.8, 0.8, 1, 0.4, 0.4)
+    GameTooltip:AddLine("Still to craft, or in the mail.", 0.6, 0.6, 0.6, true)
+  end
+  if #others > 0 then
+    GameTooltip:AddLine("Other characters' bags as of when they last logged in.", 0.6, 0.6, 0.6, true)
+  end
+end
+ns.deAddWhereLines = addWhereLines
 
 local function changed()
   if ns.updateDisenchantButton then ns.updateDisenchantButton() end
@@ -64,10 +162,7 @@ end
 local function queueDisenchantItem(itemID, name, count, cost, projected)
   if not itemID or count <= 0 then return end
   local queue = deQueue()
-  if #queue == 0 then -- a new run
-    deRun()
-    db.deRun[charKey()] = nil
-  end
+  if #queue == 0 then db.deRun = nil end -- a new run
   local entry
   for _, e in ipairs(queue) do if e.itemID == itemID then entry = e break end end
   if entry then
@@ -80,6 +175,7 @@ local function queueDisenchantItem(itemID, name, count, cost, projected)
     queue[#queue + 1] = { itemID = itemID, name = name, count = count, cost = cost, projected = projected }
   end
   log("disenchant queued", name, count)
+  recordHeld()
   changed()
 end
 ns.queueDisenchantItem = queueDisenchantItem
@@ -97,10 +193,21 @@ local function changeDisenchant(entry, delta)
   entry.count = entry.count + delta
   if entry.count <= 0 then
     for i, e in ipairs(deQueue()) do if e == entry then table.remove(deQueue(), i) break end end
+    -- Done with it: forget who holds it.
+    for _, held in pairs(db.deHeld or {}) do held[entry.itemID] = nil end
   end
+  recordHeld()
   changed()
 end
 ns.changeDisenchant = changeDisenchant
+
+-- Empty the queue (Shift-click Clear in the queue window).
+local function clearDisenchant()
+  wipe(deQueue())
+  db.deHeld = nil
+  changed()
+end
+ns.clearDisenchant = clearDisenchant
 
 local function queuedEntry(itemID)
   for _, e in ipairs(deQueue()) do
@@ -221,7 +328,7 @@ local function updateDisenchantButton()
   if not InCombatLockdown() then
     local panel = ns.panel
     button:SetShown(panel ~= nil and panel:IsVisible() and isEnchanter())
-    plannerButton:SetShown(planner ~= nil and planner:IsVisible())
+    plannerButton:SetShown(planner ~= nil and planner:IsVisible() and isEnchanter())
   end
   if planner and planner:IsVisible() and planner.update then planner.update() end
 end
@@ -278,12 +385,12 @@ ns.attachDisenchantButton = attachDisenchantButton
 -- arrives in your bags (bought, crafted or from the mail).
 ------------------------------------------------------------------------------
 
-local BROWS, PROWS, PROW = 4, 6, 16
+local BROWS, PROWS, LROWS, PROW = 4, 6, 6, 16
 
 local function createPlanner()
   planner = CreateFrame("Frame", "ProfessionProfitDisenchantPlanner", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
   planner:Hide()
-  planner:SetSize(320, 212 + (BROWS + PROWS) * PROW)
+  planner:SetSize(320, 228 + (BROWS + PROWS + LROWS) * PROW)
   planner:SetFrameStrata("HIGH")
   planner:SetClampedToScreen(true)
   planner:EnableMouse(true)
@@ -372,14 +479,33 @@ local function createPlanner()
   planner.buyText:SetJustifyH("LEFT")
   planner.buyText:SetWordWrap(false)
   y = y - 28
-  -- The current item's listings by price, so you can see how many Buy can
-  -- still take at this price and what comes next.
-  planner.ladder = planner:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  planner.ladder:SetPoint("TOPLEFT", 14, y)
-  planner.ladder:SetPoint("RIGHT", -14, 0)
-  planner.ladder:SetJustifyH("LEFT")
-  planner.ladder:SetWordWrap(false)
-  y = y - 22
+  -- The item being bought: its listings by price, cheapest first, updated
+  -- with every purchase - how many Buy can still take and what comes next.
+  planner.listHeader = header("Listings")
+  planner.listRows = {}
+  for i = 1, LROWS do
+    local row = CreateFrame("Frame", nil, planner)
+    row:SetHeight(PROW)
+    row:SetPoint("TOPLEFT", 12, y)
+    row:SetPoint("RIGHT", -12, 0)
+    y = y - PROW
+    local function cell(justify, width)
+      local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      fs:SetJustifyH(justify)
+      fs:SetWordWrap(false)
+      if width then fs:SetWidth(width) end
+      return fs
+    end
+    row.profit = cell("RIGHT", 90)
+    row.profit:SetPoint("RIGHT", -2, 0)
+    row.count = cell("RIGHT", 40)
+    row.count:SetPoint("RIGHT", row.profit, "LEFT", -6, 0)
+    row.price = cell("LEFT")
+    row.price:SetPoint("LEFT", 2, 0)
+    row.price:SetPoint("RIGHT", row.count, "LEFT", -6, 0)
+    planner.listRows[i] = row
+  end
+  y = y - 6
 
   -- To disenchant
   header("To disenchant")
@@ -391,6 +517,8 @@ local function createPlanner()
       GameTooltip:AddLine(" ")
       GameTooltip:AddDoubleLine("Cost", API.Money(e.cost) .. " ea", 0.8, 0.8, 0.8, 1, 1, 1)
       GameTooltip:AddDoubleLine("Projected profit", API.Money(e.projected) .. " ea", 0.8, 0.8, 0.8, 1, 1, 1)
+      GameTooltip:AddLine(" ")
+      addWhereLines(e)
       GameTooltip:AddLine("Right-click: remove one from the plan.", 0.6, 0.6, 0.6)
       GameTooltip:Show()
     end)
@@ -429,16 +557,35 @@ local function createPlanner()
     local text, canBuy = ns.buyStatus()
     planner.buyText:SetText(text)
     planner.buyButton:SetEnabled(canBuy)
+    -- Listings of the item being bought: green while that price still
+    -- profits; ">" marks the price Buy takes next.
     local ladder, full, r = ns.buyLadder()
-    local parts = {}
-    for i, step in ipairs(ladder or {}) do
-      if i > 4 then break end
-      -- The count is green while that price still makes a profit.
-      local color = step.price <= r.maxPrice and "|cff40ff40" or GREY
-      local more = (not full and i == #ladder) and "+" or ""
-      parts[#parts + 1] = ("%s %sx%d%s|r"):format(API.Money(step.price), color, step.count, more)
+    planner.listHeader:SetText(current and ("Listings: " .. current.name) or "Listings")
+    for i, row in ipairs(planner.listRows) do
+      local step = ladder and ladder[i]
+      if i == LROWS and ladder and #ladder > LROWS then
+        local rest = 0
+        for j = LROWS, #ladder do rest = rest + ladder[j].count end
+        row.price:SetText(GREY .. ("+%d more at %s and up"):format(rest, API.Money(ladder[LROWS].price)) .. "|r")
+        row.count:SetText("")
+        row.profit:SetText("")
+        row:Show()
+      elseif step then
+        local each = math.floor(r.value - step.price + 0.5)
+        local good = step.price <= r.maxPrice
+        row.price:SetText((i == 1 and "|cffffd100>|r " or "   ") .. API.Money(step.price))
+        row.count:SetText((good and "|cff40ff40" or GREY) .. "x" .. step.count .. ((not full and i == #ladder) and "+" or "") .. "|r")
+        row.profit:SetText((good and "|cff40ff40+" or "|cffff6666") .. API.Money(each):gsub("|r", "|r" .. (good and "|cff40ff40" or "|cffff6666")) .. "|r")
+        row:Show()
+      elseif i == 1 then
+        row.price:SetText(GREY .. (current and "Looking up listings..." or "Click an item in the Disenchant Scan to see its listings.") .. "|r")
+        row.count:SetText("")
+        row.profit:SetText("")
+        row:Show()
+      else
+        row:Hide()
+      end
     end
-    planner.ladder:SetText(#parts > 0 and (GREY .. "Listed:|r " .. table.concat(parts, GREY .. " · |r")) or "")
 
     -- To disenchant
     local queue = deQueue()
@@ -446,9 +593,8 @@ local function createPlanner()
       local e = queue[i]
       row.item = e
       if e then
-        local have = ns.bagCount(e.itemID)
-        local color = have >= e.count and "|cff40ff40" or have > 0 and "|cffffd933" or "|cffff6666"
-        row.left:SetText(("%s%d/%d|r  %s"):format(color, math.min(have, e.count), e.count, e.name or ("item " .. e.itemID)))
+        local here, others = whereText(e)
+        row.left:SetText(here .. "  " .. (e.name or ("item " .. e.itemID)) .. (others and ("  " .. others) or ""))
         row.right:SetText(API.Money(e.projected) .. GREY .. " ea|r")
         row:Show()
       else
@@ -462,6 +608,9 @@ local function createPlanner()
     if run.casts > 0 then
       summary = summary .. ("\nDone %d: %s %s(projected %s)|r"):format(run.casts, API.Money(run.realized), GREY,
         API.Money(run.projected))
+    end
+    if count > 0 and not isEnchanter() then
+      summary = summary .. "\n" .. GREY .. "This character can't disenchant: mail them to your enchanter.|r"
     end
     planner.summary:SetText(summary)
   end
@@ -495,7 +644,8 @@ local function checkArrivals()
     if lastHeld and held[e.itemID] > (lastHeld[e.itemID] or 0) then rose = true end
   end
   lastHeld = held
-  if rose and not (planner and planner:IsShown()) then showPlanner() end
+  -- Only where they can be disenchanted: not while an alt crafts them.
+  if rose and isEnchanter() and not (planner and planner:IsShown()) then showPlanner() end
 end
 
 ------------------------------------------------------------------------------
@@ -605,15 +755,20 @@ end
 local events = CreateFrame("Frame")
 for _, event in ipairs({ "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_FAILED",
   "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY", "LOOT_OPENED", "BAG_UPDATE_DELAYED", "PLAYER_REGEN_ENABLED",
-  "SKILL_LINES_CHANGED" }) do
+  "SKILL_LINES_CHANGED", "PLAYER_ENTERING_WORLD" }) do
   pcall(events.RegisterEvent, events, event)
 end
 events:SetScript("OnEvent", function(_, event, unit, ...)
   if not db then return end
   if event == "LOOT_READY" or event == "LOOT_OPENED" then
     onLoot()
+  elseif event == "PLAYER_ENTERING_WORLD" then
+    recordHeld()
   elseif event == "BAG_UPDATE_DELAYED" or event == "PLAYER_REGEN_ENABLED" or event == "SKILL_LINES_CHANGED" then
-    if event == "BAG_UPDATE_DELAYED" then checkArrivals() end
+    if event == "BAG_UPDATE_DELAYED" then
+      recordHeld()
+      checkArrivals()
+    end
     updateDisenchantButton()
   elseif unit == "player" and select(2, ...) == DISENCHANT then
     if event == "UNIT_SPELLCAST_START" then

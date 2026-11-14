@@ -10,5 +10,8 @@ externals:
 required-dependencies:
   - auctionator
 
+optional-dependencies:
+  - tradeskill-master
+
 ignore:
   - README.md

@@ -85,7 +85,7 @@ end
 
 local function popupCrafts()
   local n = tonumber(popup.qty:GetText()) or 1
-  return math.max(1, math.min(n, 999))
+  return math.max(1, math.min(n, 9999))
 end
 
 -- One line per reagent: name, what crafting the ones still needed gains over
@@ -305,11 +305,11 @@ local function createPopup()
   minus:SetPoint("TOPLEFT", 14, -32)
   minus:SetText("-")
   popup.qty = CreateFrame("EditBox", nil, popup, "InputBoxTemplate")
-  popup.qty:SetSize(40, 20)
+  popup.qty:SetSize(48, 20)
   popup.qty:SetPoint("LEFT", minus, "RIGHT", 8, 0)
   popup.qty:SetAutoFocus(false)
   popup.qty:SetNumeric(true)
-  popup.qty:SetMaxLetters(3)
+  popup.qty:SetMaxLetters(4)
   popup.qty:SetJustifyH("CENTER")
   local plus = CreateFrame("Button", nil, popup, "UIPanelButtonTemplate")
   plus:SetSize(22, 20)
@@ -328,7 +328,7 @@ local function createPopup()
   popup.madeText:SetPoint("LEFT", plus, "RIGHT", 8, 0)
   -- Restock target for this recipe (blank = none): saved on Enter.
   popup.restockBox = CreateFrame("EditBox", nil, popup, "InputBoxTemplate")
-  popup.restockBox:SetSize(36, 20)
+  popup.restockBox:SetSize(44, 20)
   popup.restockBox:SetPoint("TOPRIGHT", -16, -32)
   popup.restockBox:SetAutoFocus(false)
   popup.restockBox:SetNumeric(true)
@@ -586,7 +586,7 @@ local function queueProfitable()
     msg("Nothing to queue" .. skipped .. ".")
     return
   end
-  -- Decided together: their reagents share order books.
+  -- Decided together: their reagents share a shopping list.
   local merged, mains = mergeTrees(steps)
   local chosen = {}
   for _, sub in ipairs(chosenSubs(applyChoices(recommend(merged, mains)))) do chosen[sub.recipeID] = sub end

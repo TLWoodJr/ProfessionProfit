@@ -95,12 +95,12 @@ local function disenchantRowTooltip(row, e)
   GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
   GameTooltip:AddLine("Disenchant " .. (e.name or "?"), 1, 1, 1)
   GameTooltip:AddDoubleLine("Queued", e.count, 0.8, 0.8, 0.8, 1, 1, 1)
-  GameTooltip:AddDoubleLine("In bags", bagCount(e.itemID), 0.8, 0.8, 0.8, 1, 1, 1)
+  ns.deAddWhereLines(e)
   GameTooltip:AddDoubleLine("Craft cost", API.Money(math.floor(e.cost)) .. " ea", 0.8, 0.8, 0.8, 1, 1, 1)
   GameTooltip:AddDoubleLine("Projected profit", API.Money(math.floor(e.projected)) .. " ea, "
     .. API.Money(math.floor(e.projected * e.count)) .. " total", 0.8, 0.8, 0.8, 1, 1, 1)
   GameTooltip:AddLine("Expected materials at AH prices after the 5% cut, minus the craft cost - as when you queued it.", 0.6, 0.6, 0.6, true)
-  GameTooltip:AddLine("The Disenchant button on the Profit tab disenchants them. - / + change the count, x removes it.", 0.6, 0.6, 0.6, true)
+  GameTooltip:AddLine("The Disenchant button on the Profit tab disenchants them. Craft them on any character: the plan is shared, so mail them to your enchanter. - / + change the count, x removes it.", 0.6, 0.6, 0.6, true)
   GameTooltip:Show()
 end
 
@@ -225,6 +225,8 @@ updateQueueWindow = function()
         row.name:SetTextColor(1, 0.85, 0.2)
         text = text .. (" |cffa0a0a0(%d in bags)|r"):format(have)
       else row.name:SetTextColor(1, 0.4, 0.4) end
+      local _, others = ns.deWhereText(entry.deEntry)
+      if others then text = text .. " " .. others end
     elseif not inOpenProfession(entry) then
       row.name:SetTextColor(0.55, 0.55, 0.55)
       text = text .. " |cff808080(" .. (ns.crafterLabel(entry) or "other profession") .. ")|r"
@@ -436,11 +438,9 @@ local function createQueueWindow()
     for _, item in ipairs(list) do
       local left = item.count .. "x " .. item.name .. (item.bank > 0 and ("  |cffa0a0a0" .. item.bank .. " in bank|r") or "")
       local right = item.buy == 0 and "|cffa0a0a0from bank|r" or (item.total and API.Money(item.total) or "no price")
-      if item.short then right = right .. " |cffff6666not enough listed|r" end
-      if item.undercut then right = right .. " |cffff9933!|r" end
       GameTooltip:AddDoubleLine(left, right, 1, 1, 1, 1, 1, 1)
     end
-    GameTooltip:AddLine("Counts what's in your bags; the bank is noted separately. Costs are for buying that many (cheapest listings first) once Scan AH has read the order books; |cffff9933!|r = undercut.", 0.6, 0.6, 0.6, true)
+    GameTooltip:AddLine("Counts what's in your bags; the bank is noted separately. Costs are for buying that many at your price source's price (the cog on the Profit tab).", 0.6, 0.6, 0.6, true)
     GameTooltip:Show()
   end)
   missingHover:SetScript("OnLeave", GameTooltip_Hide)
@@ -565,7 +565,7 @@ local function createQueueWindow()
   clear:SetScript("OnClick", function()
     if IsShiftKeyDown() then
       wipe(craftQueue())
-      wipe(ns.deQueue())
+      ns.clearDisenchant()
       ns.updateDisenchantButton()
       updateQueueWindow()
     else

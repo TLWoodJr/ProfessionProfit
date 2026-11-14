@@ -86,7 +86,7 @@ local function rowTooltip(row)
   if r.incomplete then GameTooltip:AddLine("* a material has no price, so this is low.", 0.6, 0.6, 0.6, true) end
   GameTooltip:AddLine(" ")
   if r.bought then GameTooltip:AddDoubleLine("Bought", r.bought, 0.8, 0.8, 0.8, 1, 1, 1) end
-  GameTooltip:AddLine(r.planned and "Click: take it off the buy list." or "Click: add it to the buy list (in the Disenchant planner).", 0.6, 0.6, 0.6, true)
+  GameTooltip:AddLine("Click: buy it now - the Disenchant planner shows its listings and Buy works on it.", 0.6, 0.6, 0.6, true)
   GameTooltip:AddLine("Right-click: queue one you already own to disenchant at this price.", 0.6, 0.6, 0.6, true)
   GameTooltip:Show()
 end
@@ -99,7 +99,7 @@ local function rowClick(row, button)
     msg(("Queued %s to disenchant (projected %s)."):format(r.name, API.Money(r.profit)))
     return
   end
-  if r.planned then ns.removeFromBuyList(r) else ns.addToBuyList(r) end
+  ns.focusBuy(r)
 end
 
 local function createRow(parent, i)
@@ -223,9 +223,7 @@ updateWindow = function()
     win.rows[i]:Hide()
     win.rows[i].result = nil
   end
-  if scan and scan.phase == "mats" then
-    win.status:SetText(("Pricing enchanting materials %d/%d..."):format(scan.matsDone or 0, scan.matsTotal or 0))
-  elseif scan then
+  if scan then
     win.status:SetText(("Scanning uncommon and better weapons and armor: %d loaded..."):format(scan.loaded or 0))
   elseif scan == nil and win.done then
     win.status:SetText(("%d of %d listed items are worth more disenchanted. Click one to add it to the buy list.")
@@ -260,7 +258,6 @@ local function finish(reason)
   local mine = scan
   if not mine then return end
   scan = nil
-  if mine.phase == "mats" and API.IsQuickScanning() then API.CancelQuickScan() updateWindow() return end -- no gear loaded yet
   local list = C_AuctionHouse.GetBrowseResults() or {}
   local function price(tries)
     local pending = priceResults(list)
@@ -287,38 +284,22 @@ end
 
 startScan = function()
   if not (AuctionHouseFrame and AuctionHouseFrame:IsShown()) then msg("Open the auction house first.") return end
-  if API.IsScanningBooks() or (API.IsQuickScanning and API.IsQuickScanning()) then
-    msg("Another AH scan is running - try again when it's done.")
-    return
-  end
   if not win then createWindow() end
   win:Show()
   wipe(results)
   win.done = nil
-  scan = { last = GetTime(), loaded = 0, sent = false, phase = "mats" }
+  scan = { last = GetTime(), loaded = 0, sent = false }
   local mine = scan
+  -- Enchanting materials are priced from Auctionator, as everywhere else.
   local function send()
     if scan ~= mine then return end
-    mine.phase = "gear"
     if not ready() then C_Timer.After(0.25, send) return end
     sending = true
     C_AuctionHouse.SendBrowseQuery(query())
     sending = false
     scan.sent, scan.last = true, GetTime()
   end
-  -- First the enchanting materials (fresh prices for the disenchant values),
-  -- then the gear.
-  local mats = {}
-  for id in pairs(API.DE_MATS) do mats[#mats + 1] = id end
-  local count = API.QuickScan(mats, {
-    onProgress = function(n, total)
-      if scan ~= mine then return end
-      mine.last, mine.matsDone, mine.matsTotal = GetTime(), n, total
-      updateWindow()
-    end,
-    onDone = function() send() end,
-  })
-  if not count or count == 0 then send() end
+  send()
   -- Settle for what's loaded when results stop coming.
   local function watch()
     if scan ~= mine then return end

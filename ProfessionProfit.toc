@@ -10,7 +10,7 @@
 ## X-Curse-Project-ID: 1759332
 ## SavedVariables: ProfessionProfitDB
 ## Dependencies: Auctionator
-## OptionalDeps: LibCraftProfit-1.0, DevLog
+## OptionalDeps: TradeSkillMaster, LibCraftProfit-1.0, DevLog
 
 # Embedded libraries: the packager uncomments these in release builds. While
 # developing, the standalone LibCraftProfit-1.0 addon (OptionalDeps) loads them.
@@ -31,6 +31,7 @@ Crafting.lua
 QueueWindow.lua
 Restock.lua
 Tabs.lua
+PriceSource.lua
 Toast.lua
 Disenchant.lua
 DisenchantScan.lua

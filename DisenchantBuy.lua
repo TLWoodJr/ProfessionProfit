@@ -3,14 +3,15 @@
 -- Click items in the Disenchant Scan to put them on the buy list. Buying
 -- works on the first item on the list, one listing per press of Buy:
 --
---   searching  an item search is out; Buy waits for its full answer
+--   searching  an item search is out; Buy waits for its answer
 --   ready      the cheapest listing is known; Buy places a buyout on it
 --   buying     waiting for the AH to confirm or refuse the purchase
 --
--- Every outcome (bought, refused, dropped, no answer) searches again, so the
--- price, the listings by price (shown in the planner) and the scan row are
--- always current. The item comes off the list when its cheapest listing no
--- longer makes a profit.
+-- One search gives every listing; each purchase (or refusal) steps on to
+-- the next cheapest one without searching again, so Buy can be pressed
+-- straight away. The item is searched again only when those listings run
+-- out and the answer wasn't complete, or the AH didn't answer a purchase.
+-- It comes off the list when its cheapest listing no longer makes a profit.
 --
 -- This never opens the AH's own Buy page for the item: with that page open,
 -- the AH silently drops every other purchase.
@@ -25,7 +26,7 @@ local BUY_TIMEOUT = 4    -- seconds without an answer to a purchase
 local PRICE_SORT = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
 
 local list = {} -- picked scan results, in order. r.maxPrice: dearest buyout that still profits
--- The first item's state: { r, phase, seq, auctionID, price, ladder, full, staleTries }
+-- The first item's state: { r, phase, seq, auctionID, price, listings, ladder, full, staleTries, buyToken }
 local cur
 -- Listings bought or refused this AH visit. An answer right after a purchase
 -- can come from the AH's cache and still include them.
@@ -78,64 +79,86 @@ search = function()
   changed()
 end
 
--- Group the listings by price: { { price, count }, ... } cheapest first.
--- Also returns the cheapest listing and whether any already-bought one showed.
+-- The listings we can buy, cheapest first: { { auctionID, price }, ... }.
+-- Also returns whether any already-bought one showed.
 local function readListings(itemKey)
-  local byPrice, best, stale = {}, nil, false
+  local listings, stale = {}, false
   for i = 1, C_AuctionHouse.GetNumItemSearchResults(itemKey) or 0 do
     local info = C_AuctionHouse.GetItemSearchResultInfo(itemKey, i)
     if info and gone[info.auctionID] then
       stale = true
     elseif info and info.buyoutAmount and not info.containsOwnerItem and (info.quantity or 1) == 1 then
-      byPrice[info.buyoutAmount] = (byPrice[info.buyoutAmount] or 0) + 1
-      if not best or info.buyoutAmount < best.buyoutAmount then best = info end
+      listings[#listings + 1] = { auctionID = info.auctionID, price = info.buyoutAmount }
     end
   end
+  table.sort(listings, function(a, b) return a.price < b.price end)
+  return listings, stale
+end
+
+-- Group listings by price: { { price, count }, ... } cheapest first.
+local function ladderOf(listings)
   local ladder = {}
-  for price, count in pairs(byPrice) do ladder[#ladder + 1] = { price = price, count = count } end
-  table.sort(ladder, function(a, b) return a.price < b.price end)
-  return ladder, best, stale
+  for _, l in ipairs(listings) do
+    local last = ladder[#ladder]
+    if last and last.price == l.price then last.count = last.count + 1
+    else ladder[#ladder + 1] = { price = l.price, count = 1 } end
+  end
+  return ladder
 end
 
 local removeFromBuyList -- forward
 
-local function onItemResults(itemKey)
-  if not (cur and cur.phase == "searching" and sameKey(itemKey, cur.r.browse.itemKey)) then return end
+-- Point Buy at the cheapest listing left, with no search: when none are
+-- left, search again only if the answer may have had more.
+local function useNext()
   local r = cur.r
+  local best = cur.listings[1]
+  if not best and not cur.full then search() return end
+  cur.ladder = ladderOf(cur.listings)
+
+  -- Keep the scan row on the current cheapest price.
+  if best then
+    r.price, r.profit = best.price, math.floor(r.value - best.price + 0.5)
+    if r.profit > 0 then ns.deScanSort() else ns.deScanRemove(r) end
+  else
+    ns.deScanRemove(r)
+  end
+
+  if not best or best.price > r.maxPrice then
+    local why = best and ("cheapest is now " .. API.Money(best.price)) or "none listed"
+    msg(("No more %s at a profit (%s%s)."):format(r.name, why, r.bought and (", bought " .. r.bought) or ""))
+    removeFromBuyList(r)
+    return
+  end
+  cur.phase, cur.auctionID, cur.price = "ready", best.auctionID, best.price
+  changed()
+end
+
+-- Our search's answer, or (while ready) any other answer for the item -
+-- the AH's own list, another addon - which keeps the listings live for free.
+local function onItemResults(itemKey)
+  if not (cur and sameKey(itemKey, cur.r.browse.itemKey)) then return end
+  if cur.phase ~= "searching" and cur.phase ~= "ready" then return end
   local count = C_AuctionHouse.GetNumItemSearchResults(itemKey) or 0
   local full = C_AuctionHouse.HasFullItemSearchResults and C_AuctionHouse.HasFullItemSearchResults(itemKey)
   -- An empty answer that isn't complete is a search still loading, not "none listed".
   if count == 0 and not full then return end
-  local ladder, best, stale = readListings(itemKey)
-  log("item results for", r.name, count, "results, full", full or false, "cheapest", best and best.buyoutAmount or "none",
-    "auction", best and best.auctionID or "-", "already bought seen", stale)
+  local listings, stale = readListings(itemKey)
+  log("item results for", cur.r.name, cur.phase, count, "results, full", full or false, "cheapest",
+    listings[1] and listings[1].price or "none", "already bought seen", stale)
+  -- While ready, only take an answer that shows something to buy.
+  if cur.phase == "ready" and not listings[1] then return end
 
   -- Only listings already bought: probably the AH's cache. Ask again.
-  if not best and stale and (cur.staleTries or 0) < 3 then
+  if not listings[1] and stale and (cur.staleTries or 0) < 3 then
     cur.staleTries = (cur.staleTries or 0) + 1
     local mine = cur.seq
     C_Timer.After(1, function() if cur and cur.seq == mine then search() end end)
     return
   end
   cur.staleTries = nil
-  cur.ladder, cur.full = ladder, full
-
-  -- Keep the scan row on the current cheapest price.
-  if best then
-    r.price, r.profit = best.buyoutAmount, math.floor(r.value - best.buyoutAmount + 0.5)
-    if r.profit > 0 then ns.deScanSort() else ns.deScanRemove(r) end
-  else
-    ns.deScanRemove(r)
-  end
-
-  if not best or best.buyoutAmount > r.maxPrice then
-    local why = best and ("cheapest is now " .. API.Money(best.buyoutAmount)) or "none listed"
-    msg(("No more %s at a profit (%s%s)."):format(r.name, why, r.bought and (", bought " .. r.bought) or ""))
-    removeFromBuyList(r)
-    return
-  end
-  cur.phase, cur.auctionID, cur.price = "ready", best.auctionID, best.buyoutAmount
-  changed()
+  cur.listings, cur.full = listings, full and true or false
+  useNext()
 end
 
 ------------------------------------------------------------------------------
@@ -172,6 +195,28 @@ ns.addToBuyList = function(r)
   changed()
 end
 
+-- Buy this one now: put it on the list (if it isn't) at the top, so the
+-- planner shows its listings and Buy works on it. Not mid-purchase: the
+-- AH's answer belongs to the item being bought.
+ns.focusBuy = function(r)
+  if cur and cur.phase == "buying" and cur.r ~= r then
+    msg("Waiting for the AH to answer the last Buy - click again in a moment.")
+    return
+  end
+  if not r.planned then
+    r.planned = true
+    r.maxPrice = math.ceil(r.value) - 1
+  else
+    for i, x in ipairs(list) do
+      if x == r then table.remove(list, i) break end
+    end
+  end
+  table.insert(list, 1, r)
+  if ns.showDisenchantPlanner then ns.showDisenchantPlanner() end
+  startNext()
+  changed()
+end
+
 ------------------------------------------------------------------------------
 -- Buying
 ------------------------------------------------------------------------------
@@ -180,19 +225,27 @@ local function settle(outcome, detail)
   if not (cur and cur.phase == "buying") then return end
   local r, id, price = cur.r, cur.auctionID, cur.price
   log("buy", outcome, r.name, id, detail or "")
-  if outcome == "bought" then
+  cur.buyToken = nil
+  if outcome == "bought" or outcome == "refused" then
     gone[id] = true
-    r.bought = (r.bought or 0) + 1
-    ns.queueDisenchantItem(r.itemID, r.name, 1, price, math.floor(r.value - price + 0.5))
-  elseif outcome == "refused" then
-    gone[id] = true
-    msg(("The auction house refused that %s (error %s) - finding the next one."):format(r.name, tostring(detail)))
+    if cur.listings[1] and cur.listings[1].auctionID == id then table.remove(cur.listings, 1) end
+    if outcome == "bought" then
+      r.bought = (r.bought or 0) + 1
+      ns.queueDisenchantItem(r.itemID, r.name, 1, price, math.floor(r.value - price + 0.5))
+    else
+      msg(("The auction house refused that %s (error %s) - on to the next one."):format(r.name, tostring(detail)))
+    end
+    useNext() -- the next cheapest listing, no search
   elseif outcome == "dropped" then
+    -- Never reached the AH: the same listing is still there.
     msg("The auction house dropped the purchase - press Buy again.")
+    cur.phase = "ready"
+    changed()
   else
-    msg(("No answer from the auction house for %s - press Buy again."):format(r.name))
+    -- It may still have gone through: look again before buying more.
+    msg(("No answer from the auction house for %s - checking its listings again."):format(r.name))
+    search()
   end
-  search() -- fresh listings either way
 end
 
 -- Buy the current listing. Needs a key press or click (the AH requires it).
@@ -207,11 +260,13 @@ ns.buyNext = function()
   -- A purchase sent while the AH is busy is lost, and it can't be retried
   -- without another press.
   if not ahReady() then msg("The auction house is busy - press Buy again in a moment.") return end
-  cur.phase, cur.buyT = "buying", GetTime()
+  -- Each purchase has its own token: with no search between buys, an old
+  -- purchase's timeout must not settle a newer one.
+  local token = {}
+  cur.phase, cur.buyT, cur.buyToken = "buying", GetTime(), token
   C_AuctionHouse.PlaceBid(cur.auctionID, cur.price)
-  local mine = cur.seq
   C_Timer.After(BUY_TIMEOUT, function()
-    if cur and cur.seq == mine and cur.phase == "buying" then settle("no answer") end
+    if cur and cur.buyToken == token and cur.phase == "buying" then settle("no answer") end
   end)
   changed()
 end
