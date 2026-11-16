@@ -165,8 +165,26 @@ local function createQueueRow(parent, i)
   row.removeButton = smallButton("x", 0, function(entry) change(entry, -entry.count) end)
   row.plusButton = smallButton("+", -20, function(entry, step) change(entry, step) end)
   row.minusButton = smallButton("-", -40, function(entry, step) change(entry, -step) end)
+  -- V: sell what it makes to a vendor (the Vendor shuffle window plans it).
+  row.vendorButton = smallButton("V", -62, function(entry)
+    entry.vendor = not entry.vendor or nil
+    msg(("%s: %s."):format(entry.name, entry.vendor and "sell to a vendor (see Vendor shuffle)" or "sell on the AH"))
+    updateQueueWindow()
+  end)
+  row.vendorButton:SetScript("OnEnter", function(self)
+    local entry = row.entry
+    if not entry then return end
+    local each = entry.productID and API.VendorSellPrice(entry.productID)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(entry.vendor and "Selling to a vendor" or "Sell to a vendor")
+    GameTooltip:AddDoubleLine("Vendor pays", each and (API.Money(each) .. " ea") or "nothing (can't be vendored)",
+      0.8, 0.8, 0.8, 1, 1, 1)
+    GameTooltip:AddLine("Click to switch between selling what this makes on the AH and selling it to a vendor. Vendor items are priced at the vendor's price (no AH cut); Vendor shuffle shows the whole plan.", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end)
+  row.vendorButton:SetScript("OnLeave", GameTooltip_Hide)
   row.count = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  row.count:SetPoint("RIGHT", -64, 0)
+  row.count:SetPoint("RIGHT", -84, 0)
   row.count:SetWidth(36)
   row.count:SetJustifyH("RIGHT")
   row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -196,6 +214,7 @@ end
 updateQueueWindow = function()
   local queue = computeQueue()
   if tabs and tabs[3] then tabs[3]:SetText(("Queue (%d)"):format(#queue)) end
+  if ns.updateVendorShuffle then ns.updateVendorShuffle() end -- does nothing while it's closed
   if not queueWin or not queueWin:IsShown() then return end
   queueWin.title:SetText(("Craft Queue (%d)"):format(#queue))
   -- Disenchanting follows the crafts.
@@ -215,7 +234,11 @@ updateQueueWindow = function()
     row.plusButton:SetShown(not entry.auto)
     row.minusButton:SetShown(not entry.auto)
     row.removeButton:SetShown(not entry.auto)
+    local canVendor = not entry.auto and not entry.deEntry and not entry.de
+    row.vendorButton:SetShown(canVendor)
+    if canVendor then row.vendorButton:SetText(entry.vendor and (GREEN .. "V|r") or (GREY .. "V|r")) end
     local text = entry.auto and (("  "):rep(entry.depth or 1) .. entry.name .. " |cffa0a0a0(reagent)|r") or entry.name
+    if entry.vendor and not entry.auto then text = text .. " |cff33ff33(vendor)|r" end
     local n = not entry.deEntry and craftableNow(entry) or 0
     if entry.deEntry then
       -- Green when they're all in your bags, yellow for some, red for none.
@@ -313,6 +336,9 @@ updateQueueWindow = function()
     queueWin.nextText:SetText(#queue == 0 and "" or "|cffff6666Nothing craftable in this profession.|r")
   end
   queueWin.craftButton:Enable() -- clicking explains why when nothing is craftable
+  local seconds, guessed = ns.queueSeconds(queue)
+  queueWin.eta = { seconds = seconds, guessed = guessed, at = GetTime() }
+  queueWin.showTimer()
   if ns.popup and not ns.popup.recipe then ns.showBatch() end
 end
 ns.updateQueueWindow = updateQueueWindow
@@ -413,7 +439,7 @@ local function createQueueWindow()
   profitHover:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:AddLine("Queue profit")
-    GameTooltip:AddLine("What the queued items sell for on the AH after the 5% cut, minus every reagent the queue uses - priced like the Missing list (Buy items from vendors, the amounts needed, the reagents it crafts).", 1, 1, 1, true)
+    GameTooltip:AddLine("What the queued items sell for on the AH after the 5% cut (items marked V: what a vendor pays, no cut), minus every reagent the queue uses - priced like the Missing list (Buy items from vendors, the amounts needed, the reagents it crafts).", 1, 1, 1, true)
     GameTooltip:AddLine("Reagents already in your bags or bank count at what they'd cost to buy, so changes move Profit and Missing by the same amount unless you own some of what changed.", 1, 1, 1, true)
     GameTooltip:AddLine("From reagents: what crafting the ticked reagents saves over buying them. Untick Craft reagents to see the profit without them.", 0.7, 0.7, 0.7, true)
     GameTooltip:AddLine("|cffff6666*|r a reagent has no price, or the AH doesn't list enough of it. Not priced: queued items with no AH price (left out).", 0.7, 0.7, 0.7, true)
@@ -461,8 +487,25 @@ local function createQueueWindow()
 
   -- Save what you'll own once the queue is crafted as restock targets.
   local save = CreateFrame("Button", nil, queueWin, "UIPanelButtonTemplate")
-  save:SetSize(100, 22)
+  save:SetSize(96, 22)
   save:SetPoint("RIGHT", shop, "LEFT", -4, 0)
+
+  -- The start-to-finish plan for the items marked V (VendorShuffle.lua).
+  local shuffle = CreateFrame("Button", nil, queueWin, "UIPanelButtonTemplate")
+  shuffle:SetSize(90, 22)
+  shuffle:SetPoint("BOTTOMLEFT", 12, 40)
+  shuffle:SetNormalFontObject(GameFontNormalSmall)
+  shuffle:SetHighlightFontObject(GameFontHighlightSmall)
+  shuffle:SetText("Vendor shuffle")
+  shuffle:SetScript("OnClick", function() ns.toggleVendorShuffle() end)
+  shuffle:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Vendor shuffle")
+    GameTooltip:AddLine("The plan for the queued items marked V, start to finish: the reagents to buy (AH and vendor), the reagents to craft, the crafts, and what the vendor pays - with a walk from what you spend to the profit.", 1, 1, 1, true)
+    GameTooltip:AddLine("Mark an item with the V on its row.", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end)
+  shuffle:SetScript("OnLeave", GameTooltip_Hide)
   save:SetText("Save Restock")
   save:SetScript("OnClick", function()
     local saved = 0
@@ -539,6 +582,43 @@ local function createQueueWindow()
   queueWin.nextText:SetPoint("RIGHT", -12, 0)
   queueWin.nextText:SetJustifyH("LEFT")
   queueWin.nextText:SetWordWrap(false)
+
+  -- Crafting time for the whole queue; counts down while Craft all runs.
+  queueWin.timer = queueWin:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  queueWin.timer:SetPoint("BOTTOMRIGHT", -14, 70)
+  queueWin.timer:SetJustifyH("RIGHT")
+  queueWin.nextText:SetPoint("RIGHT", queueWin.timer, "LEFT", -6, 0)
+  local function showTimer()
+    local eta = queueWin.eta
+    if not eta or eta.seconds <= 0 then queueWin.timer:SetText("") return end
+    local text
+    if ns.crafting and ns.crafting.started then
+      text = ns.formatDuration(eta.seconds - (GetTime() - eta.at)) .. " left"
+    else
+      eta.at = GetTime() -- paused (waiting for Continue): the clock starts when crafting does
+      text = ns.formatDuration(eta.seconds) .. (ns.processing and " left" or "")
+    end
+    queueWin.timer:SetText((eta.guessed and "~" or "") .. text)
+  end
+  queueWin.showTimer = showTimer
+  local sinceTick = 0
+  queueWin:SetScript("OnUpdate", function(_, elapsed)
+    sinceTick = sinceTick + elapsed
+    if sinceTick < 0.5 then return end
+    sinceTick = 0
+    showTimer()
+  end)
+  local timerHover = CreateFrame("Frame", nil, queueWin)
+  timerHover:SetAllPoints(queueWin.timer)
+  timerHover:EnableMouse(true)
+  timerHover:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine("Crafting time")
+    GameTooltip:AddLine("How long crafting everything in the queue takes, reagent crafts included. It counts down while Craft all runs and is worked out again after every craft.", 1, 1, 1, true)
+    GameTooltip:AddLine("Each recipe's time is learned from your own crafts (cast time plus the pause between repeats). ~ means a recipe hasn't been timed yet and its cast time is the guess. Waiting to press Continue isn't counted.", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end)
+  timerHover:SetScript("OnLeave", GameTooltip_Hide)
 
   queueWin.craftButton = CreateFrame("Button", "ProfessionProfitCraftButton", queueWin, "UIPanelButtonTemplate")
   queueWin.craftButton:SetPoint("BOTTOMLEFT", 12, 12)

@@ -44,10 +44,42 @@ local function msg(text)
 end
 ns.msg = msg
 
+-- The last RECENT_MAX diagnostic lines stay in memory for bug reports
+-- (BugReport.lua), with or without DevLog.
+local RECENT_MAX = 200
+local recent, recentNext = {}, 1
+
+-- The last n lines logged, oldest first.
+function ns.recentLog(n)
+  local lines = {}
+  for i = n - 1, 0, -1 do
+    local line = recent[(recentNext - 2 - i) % RECENT_MAX + 1]
+    if line then lines[#lines + 1] = line end
+  end
+  return lines
+end
+
 local function log(...)
   if DevLog then DevLog.Log(ADDON, ...) end
+  local parts = {}
+  for i = 1, select("#", ...) do
+    local v = select(i, ...)
+    parts[i] = type(v) == "table" and "{table}" or tostring(v)
+  end
+  recent[recentNext] = date("%H:%M:%S ") .. table.concat(parts, " "):sub(1, 300)
+  recentNext = recentNext % RECENT_MAX + 1
 end
 ns.log = log
+
+-- "1h 05m", "12m 30s", "45s".
+local function formatDuration(seconds)
+  seconds = math.max(0, math.floor(seconds + 0.5))
+  local h, m, s = math.floor(seconds / 3600), math.floor(seconds / 60) % 60, seconds % 60
+  if h > 0 then return ("%dh %02dm"):format(h, m) end
+  if m > 0 then return ("%dm %02ds"):format(m, s) end
+  return s .. "s"
+end
+ns.formatDuration = formatDuration
 
 local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 local RequestLoadItemDataByID = (C_Item and C_Item.RequestLoadItemDataByID) or function() end

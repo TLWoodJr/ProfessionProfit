@@ -68,9 +68,11 @@ frame:SetScript("OnEvent", function(_, event, arg, ...)
   elseif event == "MERCHANT_SHOW" then
     -- Merchant item info can lag the event a little.
     C_Timer.After(0.3, ns.buyFromMerchant)
+    if ns.vendorMerchantChanged then ns.vendorMerchantChanged() end
     return
   elseif event == "MERCHANT_CLOSED" then
     ns.cancelMerchantBuy()
+    if ns.vendorMerchantChanged then ns.vendorMerchantChanged() end
     return
   elseif event == "MAIL_SHOW" then
     ns.mailOpen, ns.lastMoney, ns.mailSubject, ns.mailTakeTime = true, GetMoney(), nil, nil
@@ -172,6 +174,8 @@ SlashCmdList.PROFESSIONPROFIT = function(input)
     ns.startDisenchantScan()
   elseif cmd == "planner" then
     ns.toggleDisenchantPlanner()
+  elseif cmd == "bug" or cmd == "report" then
+    ns.showBugReport()
   elseif cmd == "dump" then
     ns.dumpRecipes()
   elseif cmd == "debug" then
@@ -195,6 +199,7 @@ SlashCmdList.PROFESSIONPROFIT = function(input)
     print("  /pp toast de - turn the disenchant profit pop-up on/off")
     print("  /pp descan - scan the AH for gear worth more disenchanted than its buyout")
     print("  /pp planner - show or hide the Disenchant planner")
+    print("  /pp bug - copy a bug report (versions, recorded errors, diagnostics)")
     print("  /pp debug - show diagnostics if the Profit tab is missing")
   end
 end

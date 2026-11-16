@@ -138,6 +138,8 @@ local function craftButtonClicked()
     return
   end
   ns.processing = { steps = 0 }
+  -- The vendor shuffle's overview becomes the plan you're committing to.
+  if ns.lockVendorShuffle then ns.lockVendorShuffle() end
   earned.total, earned.crafts, earned.unpriced, earned.saved, earned.reagents = 0, 0, 0, 0, 0
   startStep(true)
 end
@@ -170,7 +172,68 @@ ns.onCraftStopped = onCraftStopped
 -- One cast finished: count it off the queue. Reagent crafts need no
 -- bookkeeping - the new items in your bags lower their count by themselves.
 -- Returns "queued" for a queued item ("disenchant" when it's queued to be
--- disenchanted), "reagent" for a reagent craft.
+-- disenchanted, "vendor" when it's to be sold to a vendor), "reagent" for a
+-- reagent craft.
+------------------------------------------------------------------------------
+-- Crafting time: each recipe's seconds per craft, learned from the gap
+-- between one craft finishing and the next (cast time plus the pause the
+-- game leaves between repeats), saved in db.craftTimes. Before a recipe has
+-- been timed, its spell's cast time is the guess (DEFAULT_SECONDS without one).
+------------------------------------------------------------------------------
+
+local DEFAULT_SECONDS = 3
+local SAMPLE_MAX = 30 -- a longer gap means you stopped in between
+
+local function spellCastSeconds(spellID)
+  local ms
+  if C_Spell and C_Spell.GetSpellInfo then
+    local info = C_Spell.GetSpellInfo(spellID)
+    ms = info and info.castTime
+  elseif GetSpellInfo then
+    ms = select(4, GetSpellInfo(spellID))
+  end
+  return (ms and ms > 0) and ms / 1000 or nil
+end
+
+local lastCraft -- { id, at }
+
+local function noteCraftTime(spellID)
+  local now = GetTime()
+  if lastCraft and lastCraft.id == spellID and now - lastCraft.at < SAMPLE_MAX then
+    db.craftTimes = db.craftTimes or {}
+    local old, sample = db.craftTimes[spellID], now - lastCraft.at
+    -- Way over the usual (or the cast time) means a pause, not a craft.
+    local usual = old or spellCastSeconds(spellID)
+    if not usual or sample <= usual * 2 + 1 then
+      db.craftTimes[spellID] = old and (old * 0.8 + sample * 0.2) or sample
+    end
+  end
+  lastCraft = { id = spellID, at = now }
+end
+
+-- Seconds per craft of a recipe, and whether that's a guess (never timed).
+local function craftSeconds(recipeID)
+  local timed = db.craftTimes and db.craftTimes[recipeID]
+  if timed then return timed, false end
+  return spellCastSeconds(recipeID) or DEFAULT_SECONDS, true
+end
+ns.craftSeconds = craftSeconds
+
+-- Total seconds to craft a list of queue entries ({ recipeID, count }), and
+-- whether any of it is a guess.
+local function queueSeconds(entries)
+  local total, guessed = 0, false
+  for _, entry in ipairs(entries) do
+    if entry.recipeID and (entry.count or 0) > 0 then
+      local each, guess = craftSeconds(entry.recipeID)
+      total = total + each * entry.count
+      guessed = guessed or guess
+    end
+  end
+  return total, guessed
+end
+ns.queueSeconds = queueSeconds
+
 local function onCraftSucceeded(spellID)
   local isReagentCraft, stepDone, counted
   if ns.crafting and ns.crafting.recipeID == spellID then
@@ -193,7 +256,8 @@ local function onCraftSucceeded(spellID)
         entry.count = entry.count - 1
         if entry.count <= 0 then table.remove(queue, index) end
         log("crafted", entry.name, "left", math.max(entry.count, 0))
-        counted = entry.de and "disenchant" or "queued"
+        counted = entry.de and "disenchant" or entry.vendor and "vendor" or "queued"
+        if entry.vendor and ns.vendorShuffleCrafted then ns.vendorShuffleCrafted(entry.recipeID, entry.productID) end
         break
       end
     end
@@ -203,7 +267,13 @@ local function onCraftSucceeded(spellID)
     if ns.updateQueueWindow then ns.updateQueueWindow() end
     if refresh then refresh() end
   end)
-  if stepDone then scheduleNextStep() end
+  -- Time queue crafts only; any other spell breaks the chain of repeats.
+  if counted or isReagentCraft then noteCraftTime(spellID) else lastCraft = nil end
+  -- The wait for the next step (and its Continue press) isn't crafting time.
+  if stepDone then
+    lastCraft = nil
+    scheduleNextStep()
+  end
   return counted or (isReagentCraft and "reagent") or nil
 end
 ns.onCraftSucceeded = onCraftSucceeded

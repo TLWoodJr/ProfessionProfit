@@ -28,12 +28,22 @@ with TSM itself.
 - **Vendor auto-buy**: at a vendor, a confirmation lists the queue's vendor reagents and their total. Turn it off
   with "Buy items from vendors" or `/pp vendor`.
 - **Craft all**: crafts the queue one press at a time with a key binding (Key Bindings > AddOns > ProfessionProfit).
-  A pop-up shows each craft's profit.
+  A pop-up shows each craft's profit. The queue window shows how long crafting everything takes and counts it down
+  as you craft. Each recipe's time is learned from your own crafts; ~ marks a guess from the cast time.
 - **Shuffle**: a Shuffle column shows what each recipe makes if you craft it and disenchant the result: the
   expected enchanting materials at AH prices after the cut, minus the craft cost. Hover a row for the materials
   and their chances. Scan AH searches the materials too.
 - **Vendor**: a Vendor column shows what each recipe makes if you sell what it crafts to a vendor: the vendor's
   price (no AH cut) minus the craft cost. "Profitable only" counts whichever of AH, shuffle and vendor pays most.
+- **Vendor shuffle**: click the V on a queued item to sell what it makes to a vendor (the queue's Profit then uses
+  the vendor's price). The Vendor shuffle button shows the plan start to finish: the reagents to buy (AH and vendor,
+  and what you already own), the reagents to craft, the crafts and what the vendor pays. Below it, a price walkup
+  charts it from reagent cost to profit, with the margin, the cash you need, gold per hour of crafting and how
+  selling on the AH compares.
+  **Fill bags** sets the marked items' counts to as many crafts as your free bag slots and gold allow. The plan is
+  live while you set it up; Craft all (or Lock plan) locks it as the result you're committing to, and the window
+  then counts your crafts against it until you Replan. At a merchant, **Sell all** sells what the marked crafts made
+  after you confirm the total. It keeps anything another queued craft needs as a reagent and touches nothing else.
 - **Disenchant queue** (enchanters): tick Disenchant when you queue a recipe with +, and what it makes is queued
   for disenchanting with its projected profit. The Disenchant button on the Profit tab (or its key binding)
   disenchants the next one in your bags. A pop-up shows each disenchant's realized profit next to the projection,
@@ -64,12 +74,14 @@ with TSM itself.
 | `/pp toast de` | Turn the disenchant profit pop-up on or off |
 | `/pp descan` | Scan the AH for gear worth more disenchanted than its buyout |
 | `/pp planner` | Show or hide the Disenchant planner |
+| `/pp bug` | A bug report to copy: versions, settings, recorded errors and blocked actions, recent diagnostics |
 | `/pp debug` | Diagnostics if the Profit tab is missing (include this in bug reports) |
 
 ## Bugs and requests
 
-Open an issue at <https://github.com/TLWoodJr/ProfessionProfit/issues> with your `/pp debug` output and your
-Auctionator version.
+ProfessionProfit records Lua errors and any action the game blocks ("only available to the Blizzard UI"), and says
+so in chat. Type `/pp bug`, add what you were doing, copy the report (Ctrl+A, Ctrl+C) and paste it into an issue at
+<https://github.com/TLWoodJr/ProfessionProfit/issues>.
 
 ## Licence
 

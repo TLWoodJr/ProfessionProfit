@@ -104,84 +104,27 @@ local function selectedModernRecipeID()
   end
 end
 
--- Switch the Professions window to its recipe list (Forever can be showing
--- the profession overview page instead).
-local function showModernRecipesPage()
-  local frame = ProfessionsFrame
-  if frame.SetTab and frame.recipesTabID then
-    local current = frame.GetTab and frame:GetTab()
-    if current ~= frame.recipesTabID then
-      local ok, err = pcall(frame.SetTab, frame, frame.recipesTabID)
-      log("SetTab(recipes)", ok and "ok" or err)
-    end
-  end
-end
-
-local function selectInRecipeList(recipeID)
-  local list = ProfessionsFrame.CraftingPage and ProfessionsFrame.CraftingPage.RecipeList
-  local info = C_TradeSkillUI.GetRecipeInfo(recipeID)
-  if list and list.SelectRecipe and info then
-    local ok, err = pcall(list.SelectRecipe, list, info, true)
-    return ok, ok and "RecipeList:SelectRecipe" or tostring(err)
-  end
-  return false, "no RecipeList:SelectRecipe"
-end
-
--- The recipe search box and "have materials"-style filters can hide the
--- recipe from the list, which makes selecting it silently fail.
-local function clearRecipeFilters()
-  local list = ProfessionsFrame.CraftingPage and ProfessionsFrame.CraftingPage.RecipeList
-  local box = list and list.SearchBox
-  if box and box.GetText and box:GetText() ~= "" then
-    box:SetText("")
-    log("cleared recipe search box")
-  end
-  if C_TradeSkillUI.SetRecipeItemNameFilter then pcall(C_TradeSkillUI.SetRecipeItemNameFilter, "") end
-  if Professions and Professions.SetDefaultFilters then
-    local ok, err = pcall(Professions.SetDefaultFilters)
-    log("Professions.SetDefaultFilters", ok and "ok" or err)
-  end
-end
-
--- Try progressively stronger ways to open the recipe, checking each one.
-local OPEN_STEPS = {
-  function(id) return selectInRecipeList(id) end,
-  function(id)
-    clearRecipeFilters()
-    return true, "cleared filters (retry next step)"
-  end,
-  function(id) return selectInRecipeList(id) end,
-  function(id)
-    local ok, err = pcall(C_TradeSkillUI.OpenRecipe, id)
-    return ok, ok and "C_TradeSkillUI.OpenRecipe" or tostring(err)
-  end,
-}
-
-local function openModernRecipe(recipe, step)
-  step = step or 1
+-- Opening a recipe must not run Blizzard's profession UI code from here
+-- (RecipeList:SelectRecipe, SetTab, the search box, Professions filters):
+-- Blizzard code called by an addon runs tainted, the selected recipe it
+-- stores stays tainted, and the next press of Blizzard's Create button is
+-- blocked ("only available to the Blizzard UI") and blamed on this addon.
+-- C_TradeSkillUI.OpenRecipe is a game call: Blizzard's own event handler does
+-- the selecting, so nothing it stores is tainted.
+local function openModernRecipe(recipe)
   local id = recipe.recipeID
-  if step == 1 then
-    log("open recipe", recipe.name, id, "currently selected:", selectedModernRecipeID() or "none")
-    showModernRecipesPage()
-  end
-  local ok, how = OPEN_STEPS[step](id)
-  log("  step", step, how, ok and "" or "(failed)")
-  -- Without a way to read the selection, never escalate to clearing filters.
-  local page = ProfessionsFrame.CraftingPage
-  if not (page and page.SchematicForm and page.SchematicForm.GetRecipeInfo) then
-    if not ok then pcall(C_TradeSkillUI.OpenRecipe, id) end
-    log("  can't verify selection; stopping after step", step)
-    return
-  end
-  -- The list rebuilds asynchronously, so check a moment later.
-  C_Timer.After(step == 2 and 0.3 or 0.15, function()
-    if selectedModernRecipeID() == id then
-      log("  opened", recipe.name, "via step", step)
-    elseif step < #OPEN_STEPS then
-      openModernRecipe(recipe, step + 1)
-    else
-      log("  could not open", recipe.name, "- selected is", selectedModernRecipeID() or "none")
-      msg(("Couldn't select %s in the recipe list."):format(recipe.name))
+  log("open recipe", recipe.name, id, "currently selected:", selectedModernRecipeID() or "none")
+  local ok, err = pcall(C_TradeSkillUI.OpenRecipe, id)
+  if not ok then log("  OpenRecipe failed:", err) end
+  -- The window updates a moment later; say so if the recipe didn't open
+  -- (hidden by the search box or a filter, or the overview page is showing).
+  C_Timer.After(0.3, function()
+    local selected = selectedModernRecipeID()
+    if selected == id then
+      log("  opened", recipe.name)
+    elseif selected ~= nil or not ok then
+      log("  could not open", recipe.name, "- selected is", selected or "none")
+      msg(("Couldn't open %s in the recipe list - clear the recipe search or filters if it's hidden."):format(recipe.name))
     end
   end)
 end
@@ -204,9 +147,10 @@ end
 ns.openRecipeInUI = openRecipeInUI
 
 local function closeHost()
-  if isModern() and C_TradeSkillUI.CloseTradeSkill then
-    pcall(C_TradeSkillUI.CloseTradeSkill)
-  end
+  -- A game call: Blizzard's own TRADE_SKILL_CLOSE handler hides the window.
+  -- HideUIPanel from here would taint the UI panel layout.
+  local close = (C_TradeSkillUI and C_TradeSkillUI.CloseTradeSkill) or CloseTradeSkill
+  if close and pcall(close) then return end
   local host = hostFrame()
   if host and host:IsShown() then HideUIPanel(host) end
 end

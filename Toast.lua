@@ -131,7 +131,11 @@ local function craftToast(spellID, kind)
     amount = (buy and recipe.missing == 0) and (buy * recipe.made - recipe.cost) or nil
     opts = { label = amount and (amount >= 0 and "saved vs buying" or "more than buying"), each = " saved per craft" }
     if amount then earned.saved, earned.reagents = earned.saved + amount, earned.reagents + 1 end
-  elseif kind == "queued" then
+  elseif kind == "queued" or kind == "vendor" then
+    if kind == "vendor" then
+      amount = recipe and recipe.vendorProfit
+      opts = { incomplete = recipe and recipe.vendorIncomplete, label = "to sell to a vendor" }
+    end
     if amount then
       earned.total, earned.crafts = earned.total + amount, earned.crafts + 1
     else

@@ -28,6 +28,7 @@ ProfitTable.lua
 ReagentWindow.lua
 Crafting.lua
 QueueWindow.lua
+VendorShuffle.lua
 Restock.lua
 Tabs.lua
 PriceSource.lua
@@ -35,4 +36,5 @@ Toast.lua
 Disenchant.lua
 DisenchantScan.lua
 DisenchantBuy.lua
+BugReport.lua
 Events.lua

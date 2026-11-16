@@ -126,7 +126,8 @@ ns.recipeDef = recipeDef
 -- subs: recipes of craftable reagents to craft instead of buy. Their crafts
 -- aren't stored - computeQueue() works them out from what's in your bags.
 -- de: what it makes is to be disenchanted (the entry is priced by that).
-local function queueAdd(recipe, crafts, subs, de)
+-- vendor: what it makes is to be sold to a vendor (priced by that).
+local function queueAdd(recipe, crafts, subs, de, vendor)
   if not recipe.recipeID then return false, "only supported with the Professions (K) window" end
   if not crafts or crafts <= 0 then return false, "nothing to queue" end
   local queue = craftQueue()
@@ -141,7 +142,8 @@ local function queueAdd(recipe, crafts, subs, de)
     entry.count = crafts
     queue[#queue + 1] = entry
   end
-  if de then entry.de = true end
+  if de then entry.de, entry.vendor = true, nil end
+  if vendor and not entry.de then entry.vendor = true end
   entry.subs = entry.subs or {}
   for _, sub in ipairs(subs or {}) do
     if sub.recipeID and sub.productID then entry.subs[sub.recipeID] = recipeDef(sub) end
@@ -344,7 +346,7 @@ ns.chosenSubs = chosenSubs
 local function queueOrdered(steps)
   local done, failed = {}, {}
   for _, step in ipairs(steps) do
-    local ok, reason = queueAdd(step.recipe, step.crafts, step.subs, step.de)
+    local ok, reason = queueAdd(step.recipe, step.crafts, step.subs, step.de, step.vendor)
     if ok then
       local text = step.crafts .. " x " .. step.recipe.name
       if step.subs and #step.subs > 0 then
@@ -489,10 +491,11 @@ ns.craftGain = craftGain
 -- The queue's profit, priced like its shopping list (Buy items from
 -- vendors, the reagents it crafts): the
 -- queued items' AH value after the cut (for items queued to disenchant,
--- what disenchanting them gives), minus every reagent the queue uses
+-- what disenchanting them gives; for items queued to sell to a vendor, what
+-- the vendor pays, no cut), minus every reagent the queue uses
 -- (what's already in your bags and bank too, at what it would cost to buy).
 -- Returns profit, saving (what the reagent crafts save over buying those
--- reagents; 0 with Craft reagents off), unsold (queued items with no AH
+-- reagents; 0 with Craft reagents off), unsold (queued items with no
 -- price), incomplete (a reagent unpriced).
 local function queueProfit()
   local queue = craftQueue()
@@ -500,16 +503,18 @@ local function queueProfit()
   local sales, unsold, deMissing = 0, 0, false
   for _, main in ipairs(queue) do
     -- Queued to disenchant: what disenchanting it gives instead.
-    local sell
+    local sell, cut = nil, API.AH_CUT
     if main.de then
       local missing
       if main.productID then sell, missing = API.DisenchantValue(main.productID) end
       if sell and missing > 0 then deMissing = true end
+    elseif main.vendor then
+      sell, cut = main.productID and API.VendorSellPrice(main.productID), 0
     else
       sell = main.productID and API.SellPrice(main.productID)
     end
     if sell then
-      sales = sales + sell * (main.made or 1) * main.count * (1 - API.AH_CUT)
+      sales = sales + sell * (main.made or 1) * main.count * (1 - cut)
     else
       unsold = unsold + 1
     end
@@ -519,6 +524,223 @@ local function queueProfit()
   return math.floor(sales - cost), saving, unsold, unpriced > 0 or deMissing
 end
 ns.queueProfit = queueProfit
+
+-- Vendor shuffle: the queued items marked to sell to a vendor, start to
+-- finish. Everything they use is priced at what it costs to buy (what you
+-- own too, like the Profit line); `have` and outOfPocket show what you
+-- already own. Returns {
+--   mains        the vendor-marked queue entries
+--   buys         { id, name, count, have, src = "AH" | "vendor", unit, total } (total nil: no price)
+--   ahCost, vendorCost, unpriced
+--   reagentCrafts  reagent crafts, deepest first (computeQueue's derived entries)
+--   sales        { entry, units, unit, total } (unit nil: no vendor price)
+--   salesTotal, unsold, net, outOfPocket (buying what you don't own)
+--   saving       what crafting the reagents saves over buying them
+--   ahNet        the same crafts sold on the AH after the cut (nil: an item has no AH price)
+--   incomplete   a reagent or sale unpriced
+-- }
+local function vendorShufflePlan()
+  local mains = {}
+  for _, main in ipairs(craftQueue()) do
+    if main.vendor and main.count > 0 then mains[#mains + 1] = main end
+  end
+  local plan = { mains = mains, buys = {}, reagentCrafts = {}, sales = {}, ahCost = 0, vendorCost = 0,
+    unpriced = 0, salesTotal = 0, unsold = 0, saving = 0 }
+  if #mains == 0 then
+    plan.net, plan.outOfPocket = 0, 0
+    return plan
+  end
+
+  local entries
+  if db.skipReagentCrafts then
+    entries = {}
+    for _, main in ipairs(mains) do entries[#entries + 1] = main end
+  else
+    entries = planEntries(mains)
+  end
+  for _, entry in ipairs(entries) do
+    if entry.auto then plan.reagentCrafts[#plan.reagentCrafts + 1] = entry end
+  end
+
+  local opts = priceOpts()
+  local list, cost, unpriced = shoppingFor(entries, opts, true)
+  for _, item in ipairs(list) do
+    local _, src = API.BuyPrice(item.id, opts)
+    local buy = {
+      id = item.id, name = item.name, count = item.count, total = item.total, src = src or "AH",
+      unit = item.total and item.buy > 0 and item.total / item.buy or nil,
+      have = (GetItemCount and GetItemCount(item.id, true)) or bagCount(item.id),
+    }
+    if buy.total then
+      if buy.src == "vendor" then plan.vendorCost = plan.vendorCost + buy.total
+      else plan.ahCost = plan.ahCost + buy.total end
+    end
+    plan.buys[#plan.buys + 1] = buy
+  end
+  plan.unpriced = unpriced
+  local _, ownedCost = shoppingFor(entries, opts)
+  plan.outOfPocket = ownedCost
+
+  local ahSales = 0
+  for _, main in ipairs(mains) do
+    local units = (main.made or 1) * main.count
+    local unit = main.productID and API.VendorSellPrice(main.productID)
+    local sale = { entry = main, units = units, unit = unit, total = unit and unit * units }
+    if sale.total then plan.salesTotal = plan.salesTotal + sale.total else plan.unsold = plan.unsold + 1 end
+    plan.sales[#plan.sales + 1] = sale
+    local ah = ahSales and main.productID and API.SellPrice(main.productID)
+    ahSales = ah and (ahSales + ah * units * (1 - API.AH_CUT)) or nil
+  end
+
+  plan.net = plan.salesTotal - cost
+  plan.ahNet = ahSales and math.floor(ahSales - cost) or nil
+  if not db.skipReagentCrafts then
+    plan.saving = shoppingCost(mains, function() return false end, opts, true) - cost
+  end
+  plan.incomplete = unpriced > 0 or plan.unsold > 0
+  return plan
+end
+ns.vendorShufflePlan = vendorShufflePlan
+
+-- Fill bags: as many crafts of the vendor-marked items as fit in your free
+-- bag slots (general bags only) and your gold. Space counts the reagents you
+-- still need (bought, or taken from the bank) plus the items made, so
+-- nothing overflows mid-craft. Crafts are added one at a time to each item
+-- in turn, so several marked items share the space.
+local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+local GetFreeSlots = (C_Container and C_Container.GetContainerNumFreeSlots) or GetContainerNumFreeSlots
+
+local function freeBagSlots()
+  local free = 0
+  for bag = 0, NUM_BAG_SLOTS or 4 do
+    local n, bagType = GetFreeSlots(bag)
+    if n and (bagType == 0 or bagType == nil) then free = free + n end
+  end
+  return free
+end
+
+-- nil until the game has loaded the item's info.
+local function stackSize(itemID)
+  local size = select(8, GetItemInfo(itemID))
+  if size and size > 0 then return size end
+  if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(itemID) end
+end
+
+-- Bag slots (beyond what's used now) and gold that crafting `mains` needs.
+-- Simulates your bags through the crafts: after shopping (bought and bank
+-- reagents added), after each level of reagent crafts, after the queued
+-- crafts. Reagents used up free their slots as the crafted items fill new
+-- ones. Within a step, bag use moves in a straight line between its ends,
+-- except for partly filled stacks: one extra slot per item the step touches
+-- (minus one) covers those.
+local function fillNeeds(mains)
+  local entries = mains
+  if not db.skipReagentCrafts then entries = planEntries(mains) end
+  local list, cost = shoppingFor(entries, priceOpts())
+  local inv, ids, unknown = {}, {}, false
+  local function touch(id)
+    if inv[id] == nil then
+      inv[id] = bagCount(id)
+      ids[#ids + 1] = id
+    end
+  end
+  for _, e in ipairs(entries) do
+    if e.productID then touch(e.productID) end
+    for _, r in ipairs(e.reagents) do if r.id then touch(r.id) end end
+  end
+  local function used()
+    local n = 0
+    for _, id in ipairs(ids) do
+      local size = stackSize(id)
+      if not size then unknown = true size = 1 end
+      n = n + math.ceil(math.max(inv[id], 0) / size)
+    end
+    return n
+  end
+  local baseline = used()
+  for _, item in ipairs(list) do
+    touch(item.id)
+    inv[item.id] = inv[item.id] + item.count
+  end
+  local peak = used() - baseline
+  -- Steps in craft order: each depth of reagent crafts, then the queued
+  -- crafts (planEntries lists them that way).
+  local i = 1
+  while i <= #entries do
+    local depth = entries[i].auto and entries[i].depth or 0
+    local before, touched, k = used(), {}, 0
+    local j = i
+    while j <= #entries and (entries[j].auto and entries[j].depth or 0) == depth do
+      local e = entries[j]
+      for _, r in ipairs(e.reagents) do
+        if r.id then
+          inv[r.id] = inv[r.id] - r.c * e.count
+          touched[r.id] = true
+        end
+      end
+      if e.productID then
+        inv[e.productID] = inv[e.productID] + (e.made or 1) * e.count
+        touched[e.productID] = true
+      end
+      j = j + 1
+    end
+    for _ in pairs(touched) do k = k + 1 end
+    peak = math.max(peak, math.max(before, used()) - baseline + math.max(k - 1, 0))
+    i = j
+  end
+  return peak, cost, unknown
+end
+
+local MAX_FILL_STEPS = 400
+local MAX_STRIDE = 256
+
+local function fillBagsForVendor()
+  local marked, trial = {}, {}
+  for _, main in ipairs(craftQueue()) do
+    if main.vendor then
+      marked[#marked + 1] = main
+      trial[#trial + 1] = setmetatable({ count = 0 }, { __index = main })
+    end
+  end
+  if #marked == 0 then return nil, "Mark a queued item with V first." end
+  if not GetFreeSlots then return nil, "This client doesn't report free bag slots." end
+  local free, gold = freeBagSlots(), GetMoney()
+  -- Stack sizes decide the space; don't guess them.
+  if select(3, fillNeeds(marked)) then return nil, "Item info is still loading - try Fill bags again in a moment." end
+  -- Each item in turn takes a stride of crafts: doubling while they fit,
+  -- halving when they don't, done when even one doesn't fit.
+  local stride, full, open, steps, limit = {}, {}, #trial, 0, nil
+  for i in ipairs(trial) do stride[i] = 1 end
+  while open > 0 and steps < MAX_FILL_STEPS do
+    for i, t in ipairs(trial) do
+      if not full[i] then
+        t.count = t.count + stride[i]
+        steps = steps + 1
+        local slots, cost = fillNeeds(trial)
+        if slots > free or cost > gold then
+          t.count = t.count - stride[i]
+          if stride[i] > 1 then
+            stride[i] = math.floor(stride[i] / 2)
+          else
+            full[i], open = true, open - 1
+            limit = limit or (slots > free and "bag space" or "gold")
+          end
+        else
+          stride[i] = math.min(stride[i] * 2, MAX_STRIDE)
+        end
+      end
+    end
+  end
+  local slots, cost = fillNeeds(trial)
+  local result = { free = free, slots = slots, cost = cost, limit = limit, items = {} }
+  for i, main in ipairs(marked) do
+    result.items[i] = { name = main.name, count = trial[i].count }
+    if trial[i].count > 0 then main.count = trial[i].count end
+  end
+  log("fill bags", free, "free slots, uses", slots, "cost", cost, "limit", limit or "steps")
+  return result
+end
+ns.fillBagsForVendor = fillBagsForVendor
 
 -- Your tick overrides, per reagent recipe: kept only where they differ from
 -- the craft-or-buy rule, so the rule still decides everything else.
